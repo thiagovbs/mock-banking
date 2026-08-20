@@ -1,0 +1,88 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum AccountStatus {
+  ACTIVE
+  BLOCKED
+  CLOSED
+}
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+}
+
+enum PaymentStatus {
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  customer     Customer?
+}
+
+model Customer {
+  id        String    @id @default(uuid())
+  userId    String    @unique
+  name      String
+  document  String    @unique
+  email     String    @unique
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts  Account[]
+}
+
+model Account {
+  id            String          @id @default(uuid())
+  customerId    String
+  branch        String          @default("0001")
+  accountNumber String          @unique
+  balance       Decimal         @default(0) @db.Decimal(15, 2)
+  status        AccountStatus   @default(ACTIVE)
+  createdAt     DateTime        @default(now())
+  customer      Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  transactions  Transaction[]
+  payments      Payment[]
+}
+
+model Transaction {
+  id            String          @id @default(uuid())
+  accountId     String
+  type          TransactionType
+  amount        Decimal         @db.Decimal(15, 2)
+  balanceBefore Decimal         @db.Decimal(15, 2)
+  balanceAfter  Decimal         @db.Decimal(15, 2)
+  referenceId   String?
+  description   String?
+  createdAt     DateTime        @default(now())
+  account       Account         @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([accountId, createdAt])
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  accountId       String
+  amount          Decimal       @db.Decimal(15, 2)
+  beneficiaryName String
+  beneficiaryDoc  String
+  description     String?
+  status          PaymentStatus
+  idempotencyKey  String
+  transactionId   String?       @unique
+  createdAt       DateTime      @default(now())
+  account         Account       @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@unique([accountId, idempotencyKey])
+  @@index([accountId, createdAt])
+}
