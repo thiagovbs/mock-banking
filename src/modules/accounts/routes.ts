@@ -7,13 +7,15 @@ import { moneyToString } from '../../shared/money.js'
 
 const accountIdParams = z.object({ accountId: z.uuid() })
 
-async function requireOwnedAccount(app: any, accountId: string, customerId: string) {
+async function requireOwnedAccount(app: any, accountId: string, userId: string) {
   // Ownership is enforced in the query itself. Returning 404 for both an
   // unknown account and an account owned by another customer avoids resource enumeration.
   const account = await app.prisma.account.findFirst({
     where: {
       id: accountId,
-      customerId,
+      customer: {
+        is: { userId },
+      },
     },
   })
 
@@ -48,7 +50,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
   app.get('/v1/accounts/:accountId', { preHandler: app.authenticate }, async (request) => {
     const { accountId } = accountIdParams.parse(request.params)
     const user = request.user as JwtUser
-    const account = await requireOwnedAccount(app, accountId, user.customerId)
+    const account = await requireOwnedAccount(app, accountId, user.sub)
 
     return {
       id: account.id,
@@ -63,7 +65,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
   app.get('/v1/accounts/:accountId/balance', { preHandler: app.authenticate }, async (request) => {
     const { accountId } = accountIdParams.parse(request.params)
     const user = request.user as JwtUser
-    const account = await requireOwnedAccount(app, accountId, user.customerId)
+    const account = await requireOwnedAccount(app, accountId, user.sub)
 
     return {
       accountId: account.id,
@@ -75,7 +77,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
   app.get('/v1/accounts/:accountId/transactions', { preHandler: app.authenticate }, async (request) => {
     const { accountId } = accountIdParams.parse(request.params)
     const user = request.user as JwtUser
-    await requireOwnedAccount(app, accountId, user.customerId)
+    await requireOwnedAccount(app, accountId, user.sub)
 
     const transactions = await app.prisma.transaction.findMany({
       where: { accountId },
