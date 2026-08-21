@@ -24,10 +24,10 @@ enum PaymentStatus {
 }
 
 model User {
-  id           String   @id @default(uuid())
-  username     String   @unique
+  id           String    @id @default(uuid())
+  username     String    @unique
   passwordHash String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
   customer     Customer?
 }
 
@@ -43,16 +43,17 @@ model Customer {
 }
 
 model Account {
-  id            String          @id @default(uuid())
+  id            String        @id @default(uuid())
   customerId    String
-  branch        String          @default("0001")
-  accountNumber String          @unique
-  balance       Decimal         @default(0) @db.Decimal(15, 2)
-  status        AccountStatus   @default(ACTIVE)
-  createdAt     DateTime        @default(now())
-  customer      Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  branch        String        @default("0001")
+  accountNumber String        @unique
+  balance       Decimal       @default(0) @db.Decimal(15, 2)
+  status        AccountStatus @default(ACTIVE)
+  createdAt     DateTime      @default(now())
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
   transactions  Transaction[]
   payments      Payment[]
+  pixReceipts   PixReceipt[]
 }
 
 model Transaction {
@@ -85,4 +86,19 @@ model Payment {
 
   @@unique([accountId, idempotencyKey])
   @@index([accountId, createdAt])
+}
+
+model PixReceipt {
+  id            String   @id @default(uuid())
+  accountId     String
+  endToEndId    String   @unique
+  amount        Decimal  @db.Decimal(15, 2)
+  payerName     String
+  payerDocument String
+  description   String?
+  status        String   @default("COMPLETED")
+  transactionId String?
+  createdAt     DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id])
 }

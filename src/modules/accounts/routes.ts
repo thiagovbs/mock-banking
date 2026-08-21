@@ -3,18 +3,21 @@ import { randomInt } from 'node:crypto'
 import { z } from 'zod'
 import { JwtUser } from '../../plugins/auth.js'
 import { AppError } from '../../shared/errors.js'
-import { moneyToString, parseMoney } from '../../shared/money.js'
+import { moneyToString } from '../../shared/money.js'
 
 const accountIdParams = z.object({ accountId: z.uuid() })
-const creditSchema = z.object({
-  amount: z.union([z.string(), z.number()]),
-  description: z.string().max(200).optional(),
-})
 
 async function requireOwnedAccount(app: any, accountId: string, customerId: string) {
-  const account = await app.prisma.account.findUnique({ where: { id: accountId } })
+  // Ownership is enforced in the query itself. Returning 404 for both an
+  // unknown account and an account owned by another customer avoids resource enumeration.
+  const account = await app.prisma.account.findFirst({
+    where: {
+      id: accountId,
+      customerId,
+    },
+  })
+
   if (!account) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
-  if (account.customerId !== customerId) throw new AppError(403, 'You cannot access this account', 'FORBIDDEN_ACCOUNT')
   return account
 }
 
@@ -23,6 +26,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     const user = request.user as JwtUser
     const accountNumber = String(randomInt(100000, 999999))
 
+    // customerId is always taken from the authenticated token, never from the request body.
     const account = await app.prisma.account.create({
       data: {
         customerId: user.customerId,
@@ -89,42 +93,6 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
       description: tx.description,
       createdAt: tx.createdAt,
     }))
-  })
-
-  // DEMO ONLY: in a real banking system this would be restricted to a trusted/internal channel.
-  app.post('/v1/accounts/:accountId/credits', { preHandler: app.authenticate }, async (request, reply) => {
-    const { accountId } = accountIdParams.parse(request.params)
-    const user = request.user as JwtUser
-    const input = creditSchema.parse(request.body)
-    const amount = parseMoney(input.amount)
-
-    await requireOwnedAccount(app, accountId, user.customerId)
-
-    const result = await app.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM Account WHERE id = ${accountId} FOR UPDATE`
-      const account = await tx.account.findUniqueOrThrow({ where: { id: accountId } })
-      const balanceAfter = account.balance.add(amount)
-
-      const transaction = await tx.transaction.create({
-        data: {
-          accountId,
-          type: 'CREDIT',
-          amount,
-          balanceBefore: account.balance,
-          balanceAfter,
-          description: input.description ?? 'Demo credit',
-        },
-      })
-
-      await tx.account.update({ where: { id: accountId }, data: { balance: balanceAfter } })
-      return { transaction, balanceAfter }
-    })
-
-    return reply.code(201).send({
-      transactionId: result.transaction.id,
-      amount: moneyToString(result.transaction.amount),
-      balance: moneyToString(result.balanceAfter),
-    })
   })
 }
 
