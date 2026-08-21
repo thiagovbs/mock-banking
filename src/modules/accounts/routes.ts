@@ -24,6 +24,28 @@ async function requireOwnedAccount(app: any, accountId: string, userId: string) 
 }
 
 const accountRoutes: FastifyPluginAsync = async (app) => {
+  app.get('/v1/accounts', { preHandler: app.authenticate }, async (request) => {
+    const user = request.user as JwtUser
+
+    const accounts = await app.prisma.account.findMany({
+      where: {
+        customer: {
+          is: { userId: user.sub },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    return accounts.map((account: any) => ({
+      id: account.id,
+      branch: account.branch,
+      accountNumber: account.accountNumber,
+      balance: moneyToString(account.balance),
+      status: account.status,
+      createdAt: account.createdAt,
+    }))
+  })
+
   app.post('/v1/accounts', { preHandler: app.authenticate }, async (request, reply) => {
     const user = request.user as JwtUser
     const accountNumber = String(randomInt(100000, 999999))
