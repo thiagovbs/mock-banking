@@ -24,7 +24,7 @@ async function requireOwnedAccount(app: any, accountId: string, userId: string) 
 }
 
 const accountRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/v1/accounts', { preHandler: app.authenticate }, async (request) => {
+  app.get('/v1/me/accounts', { preHandler: app.authenticate }, async (request) => {
     const user = request.user as JwtUser
 
     const accounts = await app.prisma.account.findMany({
