@@ -27,9 +27,11 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
       throw new AppError(400, 'A valid Idempotency-Key header is required', 'INVALID_IDEMPOTENCY_KEY')
     }
 
-    const account = await app.prisma.account.findUnique({ where: { id: accountId } })
+    // Do not disclose whether another customer's account exists.
+    const account = await app.prisma.account.findFirst({
+      where: { id: accountId, customerId: user.customerId },
+    })
     if (!account) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
-    if (account.customerId !== user.customerId) throw new AppError(403, 'You cannot access this account', 'FORBIDDEN_ACCOUNT')
 
     const existing = await app.prisma.payment.findUnique({
       where: { accountId_idempotencyKey: { accountId, idempotencyKey } },
@@ -48,7 +50,19 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
     const amount = parseMoney(input.amount)
 
     const result = await app.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM Account WHERE id = ${accountId} FOR UPDATE`
+      // Ownership is revalidated while acquiring the MySQL/InnoDB row lock.
+      // This makes account authorization part of the financial transaction itself.
+      const ownedRows = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id
+        FROM Account
+        WHERE id = ${accountId}
+          AND customerId = ${user.customerId}
+        FOR UPDATE
+      `
+
+      if (ownedRows.length === 0) {
+        throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
+      }
 
       // Re-check after acquiring the account lock to handle concurrent retries safely.
       const replay = await tx.payment.findUnique({
@@ -56,7 +70,11 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
       })
       if (replay) return { payment: replay, idempotentReplay: true }
 
-      const lockedAccount = await tx.account.findUniqueOrThrow({ where: { id: accountId } })
+      const lockedAccount = await tx.account.findFirst({
+        where: { id: accountId, customerId: user.customerId },
+      })
+      if (!lockedAccount) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
+
       if (lockedAccount.status !== 'ACTIVE') {
         throw new AppError(409, 'Account is not active', 'ACCOUNT_NOT_ACTIVE')
       }
@@ -117,8 +135,10 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
       include: { account: true },
     })
 
-    if (!payment) throw new AppError(404, 'Payment not found', 'PAYMENT_NOT_FOUND')
-    if (payment.account.customerId !== user.customerId) throw new AppError(403, 'You cannot access this payment', 'FORBIDDEN_PAYMENT')
+    // Same non-enumeration behavior for payment resources.
+    if (!payment || payment.account.customerId !== user.customerId) {
+      throw new AppError(404, 'Payment not found', 'PAYMENT_NOT_FOUND')
+    }
 
     return {
       paymentId: payment.id,
