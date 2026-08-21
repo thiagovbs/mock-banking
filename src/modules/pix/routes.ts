@@ -25,7 +25,7 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
 
     // Ownership is part of the lookup so another customer's account is indistinguishable from an unknown account.
     const account = await app.prisma.account.findFirst({
-      where: { id: accountId, customerId: user.customerId },
+      where: { id: accountId, customer: { is: { userId: user.sub } } },
     })
     if (!account) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
 
@@ -39,7 +39,7 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const currentAccount = await app.prisma.account.findFirst({
-        where: { id: accountId, customerId: user.customerId },
+        where: { id: accountId, customer: { is: { userId: user.sub } } },
       })
       if (!currentAccount) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
 
@@ -57,10 +57,11 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
     const result = await app.prisma.$transaction(async (tx) => {
       // Ownership is revalidated while acquiring the MySQL/InnoDB row lock.
       const ownedRows = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id
-        FROM Account
-        WHERE id = ${accountId}
-          AND customerId = ${user.customerId}
+        SELECT a.id
+        FROM Account a
+        INNER JOIN Customer c ON c.id = a.customerId
+        WHERE a.id = ${accountId}
+          AND c.userId = ${user.sub}
         FOR UPDATE
       `
 
@@ -76,7 +77,7 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
         }
 
         const lockedAccount = await tx.account.findFirst({
-          where: { id: accountId, customerId: user.customerId },
+          where: { id: accountId, customer: { is: { userId: user.sub } } },
         })
         if (!lockedAccount) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
 
@@ -84,7 +85,7 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const lockedAccount = await tx.account.findFirst({
-        where: { id: accountId, customerId: user.customerId },
+        where: { id: accountId, customer: { is: { userId: user.sub } } },
       })
       if (!lockedAccount) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
 

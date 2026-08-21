@@ -29,7 +29,7 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
 
     // Do not disclose whether another customer's account exists.
     const account = await app.prisma.account.findFirst({
-      where: { id: accountId, customerId: user.customerId },
+      where: { id: accountId, customer: { is: { userId: user.sub } } },
     })
     if (!account) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
 
@@ -53,10 +53,11 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
       // Ownership is revalidated while acquiring the MySQL/InnoDB row lock.
       // This makes account authorization part of the financial transaction itself.
       const ownedRows = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id
-        FROM Account
-        WHERE id = ${accountId}
-          AND customerId = ${user.customerId}
+        SELECT a.id
+        FROM Account a
+        INNER JOIN Customer c ON c.id = a.customerId
+        WHERE a.id = ${accountId}
+          AND c.userId = ${user.sub}
         FOR UPDATE
       `
 
@@ -71,7 +72,7 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
       if (replay) return { payment: replay, idempotentReplay: true }
 
       const lockedAccount = await tx.account.findFirst({
-        where: { id: accountId, customerId: user.customerId },
+        where: { id: accountId, customer: { is: { userId: user.sub } } },
       })
       if (!lockedAccount) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
 
@@ -130,13 +131,21 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
     const { paymentId } = paymentIdSchema.parse(request.params)
     const user = request.user as JwtUser
 
-    const payment = await app.prisma.payment.findUnique({
-      where: { id: paymentId },
-      include: { account: true },
+    const payment = await app.prisma.payment.findFirst({
+      where: {
+        id: paymentId,
+        account: {
+          is: {
+            customer: {
+              is: { userId: user.sub },
+            },
+          },
+        },
+      },
     })
 
     // Same non-enumeration behavior for payment resources.
-    if (!payment || payment.account.customerId !== user.customerId) {
+    if (!payment) {
       throw new AppError(404, 'Payment not found', 'PAYMENT_NOT_FOUND')
     }
 
