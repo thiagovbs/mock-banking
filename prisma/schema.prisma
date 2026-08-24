@@ -23,6 +23,23 @@ enum PaymentStatus {
   FAILED
 }
 
+enum PixReceiptStatus {
+  COMPLETED
+  FAILED
+}
+
+enum PixKeyType {
+  CPF
+  CNPJ
+  EMAIL
+  PHONE
+  EVP
+}
+
+enum PixKeyStatus {
+  ACTIVE
+}
+
 model User {
   id           String    @id @default(uuid())
   username     String    @unique
@@ -54,6 +71,7 @@ model Account {
   transactions  Transaction[]
   payments      Payment[]
   pixReceipts   PixReceipt[]
+  pixKeys       PixKey[]
 }
 
 model Transaction {
@@ -89,16 +107,34 @@ model Payment {
 }
 
 model PixReceipt {
-  id            String   @id @default(uuid())
+  id            String           @id @default(uuid())
   accountId     String
-  endToEndId    String   @unique
-  amount        Decimal  @db.Decimal(15, 2)
-  payerName     String
-  payerDocument String
+  pixKeyId      String?
+  endToEndId    String           @unique
+  consentId     String?          @unique @db.VarChar(255)
+  enrollmentId  String?          @db.VarChar(255)
+  amount        Decimal          @db.Decimal(15, 2)
   description   String?
-  status        String   @default("COMPLETED")
-  transactionId String?
-  createdAt     DateTime @default(now())
+  status        PixReceiptStatus @default(COMPLETED)
+  transactionId String           @unique
+  createdAt     DateTime         @default(now())
+  account       Account          @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  pixKey        PixKey?          @relation(fields: [pixKeyId], references: [id], onDelete: Restrict)
 
-  account Account @relation(fields: [accountId], references: [id])
+  @@index([accountId, createdAt])
+  @@index([pixKeyId, createdAt])
+}
+
+model PixKey {
+  id          String       @id @default(uuid())
+  accountId   String
+  type        PixKeyType
+  value       String       @unique @db.VarChar(255)
+  status      PixKeyStatus @default(ACTIVE)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  account     Account      @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  pixReceipts PixReceipt[]
+
+  @@index([accountId, createdAt])
 }
