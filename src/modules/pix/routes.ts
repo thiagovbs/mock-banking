@@ -7,11 +7,21 @@ import { moneyToString, parseMoney } from '../../shared/money.js'
 
 const paramsSchema = z.object({ accountId: z.uuid() })
 
-
 const pixKeyRequestSchema = z.object({
   type: z.enum(['CPF', 'CNPJ', 'EMAIL', 'PHONE', 'EVP']).optional(),
   value: z.string().trim().min(1).max(255).optional(),
 }).optional()
+
+const pixTransferSchema = z.object({
+  amount: z.union([z.string(), z.number()]),
+  pixKey: z.object({
+    type: z.enum(['CPF', 'CNPJ', 'EMAIL', 'PHONE', 'EVP']),
+    value: z.string().trim().min(1).max(255),
+  }),
+  consentId: z.string().trim().min(1).max(255),
+  enrollmentId: z.string().trim().min(1).max(255).optional(),
+  description: z.string().max(200).optional(),
+})
 
 function normalizePixKey(type: 'CPF' | 'CNPJ' | 'EMAIL' | 'PHONE' | 'EVP', value: string) {
   switch (type) {
@@ -45,15 +55,19 @@ function validatePixKey(type: 'CPF' | 'CNPJ' | 'EMAIL' | 'PHONE' | 'EVP', value:
   }
 }
 
-const pixReceiptSchema = z.object({
-  amount: z.union([z.string(), z.number()]),
-  endToEndId: z.string().min(8).max(64),
-  payer: z.object({
-    name: z.string().min(2).max(120),
-    document: z.string().min(11).max(14).regex(/^\d+$/),
-  }),
-  description: z.string().max(200).optional(),
-})
+function generateEndToEndId() {
+  const now = new Date()
+  const timestamp = [
+    now.getUTCFullYear(),
+    String(now.getUTCMonth() + 1).padStart(2, '0'),
+    String(now.getUTCDate()).padStart(2, '0'),
+    String(now.getUTCHours()).padStart(2, '0'),
+    String(now.getUTCMinutes()).padStart(2, '0'),
+    String(now.getUTCSeconds()).padStart(2, '0'),
+  ].join('')
+
+  return `E00000000${timestamp}${randomUUID().replace(/-/g, '').slice(0, 17)}`
+}
 
 const pixRoutes: FastifyPluginAsync = async (app) => {
   app.get('/v1/accounts/:accountId/pix/keys', { preHandler: app.authenticate }, async (request) => {
@@ -71,7 +85,7 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
       orderBy: { createdAt: 'asc' },
     })
 
-    return keys.map((pixKey: any) => ({
+    return keys.map((pixKey) => ({
       id: pixKey.id,
       accountId: pixKey.accountId,
       type: pixKey.type,
@@ -131,66 +145,21 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
       createdAt: pixKey.createdAt,
     })
   })
-  const pixProcessSchema = z.object({
-    amount: z.union([z.string(), z.number()]),
-    pixKey: z.object({
-      type: z.enum(['CPF', 'CNPJ', 'EMAIL', 'PHONE', 'EVP']),
-      value: z.string().trim().min(1).max(255),
-    }),
-    consentId: z.string().trim().min(1).max(255),
-    enrollmentId: z.string().trim().min(1).max(255).optional(),
-    description: z.string().max(200).optional(),
-  })
 
-  function generateEndToEndId() {
-    const now = new Date()
-    const timestamp = [
-      now.getUTCFullYear(),
-      String(now.getUTCMonth() + 1).padStart(2, '0'),
-      String(now.getUTCDate()).padStart(2, '0'),
-      String(now.getUTCHours()).padStart(2, '0'),
-      String(now.getUTCMinutes()).padStart(2, '0'),
-      String(now.getUTCSeconds()).padStart(2, '0'),
-    ].join('')
-
-    return `E00000000${timestamp}${randomUUID().replace(/-/g, '').slice(0, 17)}`
-  }
-
-  app.post('/v1/pix/receipts', { preHandler: app.authenticate }, async (request, reply) => {
-    const input = pixProcessSchema.parse(request.body)
+  app.post('/v1/accounts/:accountId/pix/transfers', { preHandler: app.authenticate }, async (request, reply) => {
+    const { accountId: sourceAccountId } = paramsSchema.parse(request.params)
+    const user = request.user as JwtUser
+    const input = pixTransferSchema.parse(request.body)
     const amount = parseMoney(input.amount)
+
+    // The source account is always the account in the path and must belong to the JWT subject.
+    const sourceAccount = await app.prisma.account.findFirst({
+      where: { id: sourceAccountId, customer: { is: { userId: user.sub } } },
+    })
+    if (!sourceAccount) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
 
     const normalizedKey = normalizePixKey(input.pixKey.type, input.pixKey.value)
     validatePixKey(input.pixKey.type, normalizedKey)
-
-    // The consent is generated/validated by another system.
-    // This backend only persists it and uses it as the idempotency reference for this mock.
-    const existingByConsent = await app.prisma.pixReceipt.findUnique({
-      where: { consentId: input.consentId },
-    })
-
-    if (existingByConsent) {
-      const currentAccount = await app.prisma.account.findUnique({
-        where: { id: existingByConsent.accountId },
-      })
-
-      if (!currentAccount) {
-        throw new AppError(404, 'Destination account not found', 'DESTINATION_ACCOUNT_NOT_FOUND')
-      }
-
-      return reply.code(200).send({
-        pixReceiptId: existingByConsent.id,
-        endToEndId: existingByConsent.endToEndId,
-        consentId: existingByConsent.consentId,
-        enrollmentId: existingByConsent.enrollmentId,
-        pixKey: normalizedKey,
-        status: existingByConsent.status,
-        amount: moneyToString(existingByConsent.amount),
-        balance: moneyToString(currentAccount.balance),
-        idempotentReplay: true,
-        createdAt: existingByConsent.createdAt,
-      })
-    }
 
     const destinationKey = await app.prisma.pixKey.findFirst({
       where: {
@@ -198,79 +167,102 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
         value: normalizedKey,
         status: 'ACTIVE',
       },
-      include: {
-        account: true,
-      },
     })
+    if (!destinationKey) throw new AppError(404, 'PIX key not found', 'PIX_KEY_NOT_FOUND')
 
-    if (!destinationKey) {
-      throw new AppError(404, 'PIX key not found', 'PIX_KEY_NOT_FOUND')
+    if (destinationKey.accountId === sourceAccountId) {
+      throw new AppError(409, 'Source and destination accounts must be different', 'SAME_ACCOUNT_PIX_TRANSFER')
+    }
+
+    // consentId is generated/validated by another system. Here it is persisted and used
+    // as the idempotency reference for the mock PIX transfer.
+    const existing = await app.prisma.pixTransfer.findUnique({ where: { consentId: input.consentId } })
+    if (existing) {
+      if (existing.sourceAccountId !== sourceAccountId) {
+        throw new AppError(409, 'Consent is already associated with another PIX transfer', 'CONSENT_ALREADY_USED')
+      }
+      const debit = await app.prisma.transaction.findUnique({ where: { id: existing.debitTransactionId } })
+      if (!debit) throw new AppError(500, 'PIX transfer ledger is inconsistent', 'PIX_LEDGER_INCONSISTENT')
+
+      return reply.code(200).send({
+        pixTransferId: existing.id,
+        endToEndId: existing.endToEndId,
+        consentId: existing.consentId,
+        enrollmentId: existing.enrollmentId,
+        pixKey: normalizedKey,
+        status: existing.status,
+        amount: moneyToString(existing.amount),
+        balance: moneyToString(debit.balanceAfter),
+        idempotentReplay: true,
+        createdAt: existing.createdAt,
+      })
     }
 
     const result = await app.prisma.$transaction(async (tx) => {
-      // Lock the destination account resolved by the PIX key.
-      const rows = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT a.id
-        FROM Account a
-        INNER JOIN PixKey pk ON pk.accountId = a.id
-        WHERE pk.id = ${destinationKey.id}
-          AND pk.status = 'ACTIVE'
-        FOR UPDATE
-      `
-
-      if (rows.length === 0) {
-        throw new AppError(404, 'PIX key not found', 'PIX_KEY_NOT_FOUND')
+      // Lock both account rows in deterministic order to reduce deadlock risk.
+      const idsToLock = [sourceAccountId, destinationKey.accountId].sort()
+      for (const id of idsToLock) {
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM Account WHERE id = ${id} FOR UPDATE
+        `
       }
 
-      // Re-check consent after acquiring the lock to make concurrent retries idempotent.
-      const replay = await tx.pixReceipt.findUnique({
-        where: { consentId: input.consentId },
+      // Revalidate ownership while inside the financial transaction.
+      const lockedSource = await tx.account.findFirst({
+        where: { id: sourceAccountId, customer: { is: { userId: user.sub } } },
       })
+      if (!lockedSource) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
 
+      const lockedDestination = await tx.account.findUnique({ where: { id: destinationKey.accountId } })
+      if (!lockedDestination) throw new AppError(404, 'Destination account not found', 'DESTINATION_ACCOUNT_NOT_FOUND')
+
+      const replay = await tx.pixTransfer.findUnique({ where: { consentId: input.consentId } })
       if (replay) {
-        const replayAccount = await tx.account.findUnique({
-          where: { id: replay.accountId },
-        })
-        if (!replayAccount) {
-          throw new AppError(404, 'Destination account not found', 'DESTINATION_ACCOUNT_NOT_FOUND')
-        }
-
-        return {
-          pixReceipt: replay,
-          balanceAfter: replayAccount.balance,
-          idempotentReplay: true,
-        }
+        const debit = await tx.transaction.findUnique({ where: { id: replay.debitTransactionId } })
+        if (!debit) throw new AppError(500, 'PIX transfer ledger is inconsistent', 'PIX_LEDGER_INCONSISTENT')
+        return { transfer: replay, sourceBalanceAfter: debit.balanceAfter, idempotentReplay: true }
       }
 
-      const lockedAccount = await tx.account.findUnique({
-        where: { id: destinationKey.accountId },
-      })
-
-      if (!lockedAccount) {
-        throw new AppError(404, 'Destination account not found', 'DESTINATION_ACCOUNT_NOT_FOUND')
+      if (lockedSource.status !== 'ACTIVE') {
+        throw new AppError(409, 'Source account is not active', 'ACCOUNT_NOT_ACTIVE')
+      }
+      if (lockedDestination.status !== 'ACTIVE') {
+        throw new AppError(409, 'Destination account is not active', 'DESTINATION_ACCOUNT_NOT_ACTIVE')
+      }
+      if (lockedSource.balance.lessThan(amount)) {
+        throw new AppError(422, 'Insufficient balance', 'INSUFFICIENT_BALANCE')
       }
 
-      if (lockedAccount.status !== 'ACTIVE') {
-        throw new AppError(409, 'Destination account is not active', 'ACCOUNT_NOT_ACTIVE')
-      }
-
-      const balanceAfter = lockedAccount.balance.add(amount)
+      const sourceBalanceAfter = lockedSource.balance.sub(amount)
+      const destinationBalanceAfter = lockedDestination.balance.add(amount)
       const endToEndId = generateEndToEndId()
 
-      const transaction = await tx.transaction.create({
+      const debitTransaction = await tx.transaction.create({
         data: {
-          accountId: lockedAccount.id,
+          accountId: sourceAccountId,
+          type: 'DEBIT',
+          amount,
+          balanceBefore: lockedSource.balance,
+          balanceAfter: sourceBalanceAfter,
+          description: input.description ?? `PIX sent to ${normalizedKey}`,
+        },
+      })
+
+      const creditTransaction = await tx.transaction.create({
+        data: {
+          accountId: lockedDestination.id,
           type: 'CREDIT',
           amount,
-          balanceBefore: lockedAccount.balance,
-          balanceAfter,
+          balanceBefore: lockedDestination.balance,
+          balanceAfter: destinationBalanceAfter,
           description: input.description ?? `PIX received via key ${normalizedKey}`,
         },
       })
 
-      const pixReceipt = await tx.pixReceipt.create({
+      const transfer = await tx.pixTransfer.create({
         data: {
-          accountId: lockedAccount.id,
+          sourceAccountId,
+          destinationAccountId: lockedDestination.id,
           pixKeyId: destinationKey.id,
           endToEndId,
           consentId: input.consentId,
@@ -278,38 +270,37 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
           amount,
           description: input.description,
           status: 'COMPLETED',
-          transactionId: transaction.id,
+          debitTransactionId: debitTransaction.id,
+          creditTransactionId: creditTransaction.id,
         },
       })
 
       await tx.transaction.update({
-        where: { id: transaction.id },
-        data: { referenceId: pixReceipt.id },
+        where: { id: debitTransaction.id },
+        data: { referenceId: transfer.id },
+      })
+      await tx.transaction.update({
+        where: { id: creditTransaction.id },
+        data: { referenceId: transfer.id },
       })
 
-      await tx.account.update({
-        where: { id: lockedAccount.id },
-        data: { balance: balanceAfter },
-      })
+      await tx.account.update({ where: { id: sourceAccountId }, data: { balance: sourceBalanceAfter } })
+      await tx.account.update({ where: { id: lockedDestination.id }, data: { balance: destinationBalanceAfter } })
 
-      return {
-        pixReceipt,
-        balanceAfter,
-        idempotentReplay: false,
-      }
+      return { transfer, sourceBalanceAfter, idempotentReplay: false }
     })
 
     return reply.code(result.idempotentReplay ? 200 : 201).send({
-      pixReceiptId: result.pixReceipt.id,
-      endToEndId: result.pixReceipt.endToEndId,
-      consentId: result.pixReceipt.consentId,
-      enrollmentId: result.pixReceipt.enrollmentId,
+      pixTransferId: result.transfer.id,
+      endToEndId: result.transfer.endToEndId,
+      consentId: result.transfer.consentId,
+      enrollmentId: result.transfer.enrollmentId,
       pixKey: normalizedKey,
-      status: result.pixReceipt.status,
-      amount: moneyToString(result.pixReceipt.amount),
-      balance: moneyToString(result.balanceAfter),
+      status: result.transfer.status,
+      amount: moneyToString(result.transfer.amount),
+      balance: moneyToString(result.sourceBalanceAfter),
       idempotentReplay: result.idempotentReplay,
-      createdAt: result.pixReceipt.createdAt,
+      createdAt: result.transfer.createdAt,
     })
   })
 }
