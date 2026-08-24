@@ -60,18 +60,20 @@ model Customer {
 }
 
 model Account {
-  id            String        @id @default(uuid())
-  customerId    String
-  branch        String        @default("0001")
-  accountNumber String        @unique
-  balance       Decimal       @default(0) @db.Decimal(15, 2)
-  status        AccountStatus @default(ACTIVE)
-  createdAt     DateTime      @default(now())
-  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  transactions  Transaction[]
-  payments      Payment[]
-  pixReceipts   PixReceipt[]
-  pixKeys       PixKey[]
+  id                   String        @id @default(uuid())
+  customerId           String
+  branch               String        @default("0001")
+  accountNumber        String        @unique
+  balance              Decimal       @default(0) @db.Decimal(15, 2)
+  status               AccountStatus @default(ACTIVE)
+  createdAt            DateTime      @default(now())
+  customer             Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  transactions         Transaction[]
+  payments             Payment[]
+  pixReceipts          PixReceipt[]
+  pixKeys              PixKey[]
+  pixTransfersSent     PixTransfer[] @relation("PixTransferSource")
+  pixTransfersReceived PixTransfer[] @relation("PixTransferDestination")
 }
 
 model Transaction {
@@ -126,15 +128,40 @@ model PixReceipt {
 }
 
 model PixKey {
-  id          String       @id @default(uuid())
-  accountId   String
-  type        PixKeyType
-  value       String       @unique @db.VarChar(255)
-  status      PixKeyStatus @default(ACTIVE)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  account     Account      @relation(fields: [accountId], references: [id], onDelete: Restrict)
-  pixReceipts PixReceipt[]
+  id           String        @id @default(uuid())
+  accountId    String
+  type         PixKeyType
+  value        String        @unique @db.VarChar(255)
+  status       PixKeyStatus  @default(ACTIVE)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  pixReceipts  PixReceipt[]
+  pixTransfers PixTransfer[]
 
   @@index([accountId, createdAt])
+}
+
+model PixTransfer {
+  id                   String           @id @default(uuid())
+  sourceAccountId      String
+  destinationAccountId String
+  pixKeyId             String
+  endToEndId           String           @unique
+  consentId            String           @unique @db.VarChar(255)
+  enrollmentId         String?          @db.VarChar(255)
+  amount               Decimal          @db.Decimal(15, 2)
+  description          String?
+  status               PixReceiptStatus @default(COMPLETED)
+  debitTransactionId   String           @unique
+  creditTransactionId  String           @unique
+  createdAt            DateTime         @default(now())
+
+  sourceAccount      Account @relation("PixTransferSource", fields: [sourceAccountId], references: [id], onDelete: Restrict)
+  destinationAccount Account @relation("PixTransferDestination", fields: [destinationAccountId], references: [id], onDelete: Restrict)
+  pixKey             PixKey  @relation(fields: [pixKeyId], references: [id], onDelete: Restrict)
+
+  @@index([sourceAccountId, createdAt])
+  @@index([destinationAccountId, createdAt])
+  @@index([pixKeyId, createdAt])
 }
