@@ -1,166 +1,211 @@
 import { FastifyPluginAsync } from 'fastify'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { JwtUser } from '../../plugins/auth.js'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString, parseMoney } from '../../shared/money.js'
 
-const paramsSchema = z.object({ accountId: z.uuid() })
-const paymentIdSchema = z.object({ paymentId: z.uuid() })
 const paymentSchema = z.object({
+  paymentMethod: z.enum(['PIX', 'QR_CODE', 'BOLETO', 'BILL']),
   amount: z.union([z.string(), z.number()]),
-  beneficiary: z.object({
-    name: z.string().min(2).max(120),
-    document: z.string().min(11).max(14).regex(/^\d+$/),
-  }),
-  description: z.string().max(200).optional(),
+  consentId: z.string().trim().min(1).max(255).optional(),
+  enrollmentId: z.string().trim().min(1).max(255).optional(),
+  description: z.string().trim().max(200).optional(),
+
+  pix: z.object({
+    key: z.string().trim().min(1).max(255),
+  }).optional(),
+
+  qrCode: z.object({
+    payload: z.string().trim().min(1).max(2048).optional(),
+    pixKey: z.string().trim().min(1).max(255),
+  }).optional(),
+
+  boleto: z.object({
+    digitableLine: z.string().trim().min(20).max(100),
+  }).optional(),
+
+  bill: z.object({
+    provider: z.string().trim().min(1).max(100),
+    reference: z.string().trim().min(1).max(255),
+  }).optional(),
 })
 
+function inferPixKeyType(value: string): 'CPF' | 'CNPJ' | 'EMAIL' | 'PHONE' | 'EVP' {
+  const trimmed = value.trim()
+
+  if (trimmed.includes('@')) return 'EMAIL'
+  if (/^\d{11}$/.test(trimmed)) return 'CPF'
+  if (/^\d{14}$/.test(trimmed)) return 'CNPJ'
+  if (/^\+?\d{10,15}$/.test(trimmed)) return 'PHONE'
+  if (z.string().uuid().safeParse(trimmed).success) return 'EVP'
+
+  throw new AppError(400, 'Could not infer PIX key type', 'INVALID_PIX_KEY')
+}
+
 const paymentRoutes: FastifyPluginAsync = async (app) => {
-  app.post('/v1/accounts/:accountId/payments', { preHandler: app.authenticate }, async (request, reply) => {
-    const { accountId } = paramsSchema.parse(request.params)
+  app.post('/v1/me/payments', { preHandler: app.authenticate }, async (request, reply) => {
     const user = request.user as JwtUser
     const input = paymentSchema.parse(request.body)
-    const idempotencyKeyHeader = request.headers['idempotency-key']
-    const idempotencyKey = Array.isArray(idempotencyKeyHeader) ? idempotencyKeyHeader[0] : idempotencyKeyHeader
-
-    if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 100) {
-      throw new AppError(400, 'A valid Idempotency-Key header is required', 'INVALID_IDEMPOTENCY_KEY')
-    }
-
-    // Do not disclose whether another customer's account exists.
-    const account = await app.prisma.account.findFirst({
-      where: { id: accountId, customer: { is: { userId: user.sub } } },
-    })
-    if (!account) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
-
-    const existing = await app.prisma.payment.findUnique({
-      where: { accountId_idempotencyKey: { accountId, idempotencyKey } },
-    })
-
-    if (existing) {
-      return reply.code(200).send({
-        paymentId: existing.id,
-        status: existing.status,
-        amount: moneyToString(existing.amount),
-        idempotentReplay: true,
-        createdAt: existing.createdAt,
-      })
-    }
-
     const amount = parseMoney(input.amount)
 
+    const sourceAccount = await app.prisma.account.findFirst({
+      where: {
+        status: 'ACTIVE',
+        customer: {
+          is: {
+            userId: user.sub,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+    })
+
+    if (!sourceAccount) {
+      throw new AppError(404, 'Active account not found', 'ACCOUNT_NOT_FOUND')
+    }
+
+    if (input.paymentMethod === 'PIX' || input.paymentMethod === 'QR_CODE') {
+      const pixKey =
+        input.paymentMethod === 'PIX'
+          ? input.pix?.key
+          : input.qrCode?.pixKey
+
+      if (!pixKey) {
+        throw new AppError(
+          400,
+          input.paymentMethod === 'PIX'
+            ? 'pix.key is required for PIX payments'
+            : 'qrCode.pixKey is required for QR_CODE payments',
+          'PAYMENT_DATA_REQUIRED'
+        )
+      }
+
+      if (!input.consentId) {
+        throw new AppError(400, 'consentId is required for PIX payments', 'CONSENT_ID_REQUIRED')
+      }
+
+      const keyType = inferPixKeyType(pixKey)
+      const authorization = request.headers.authorization
+
+      if (!authorization) {
+        throw new AppError(401, 'Authorization header is required', 'UNAUTHORIZED')
+      }
+
+      // Reuse the existing PIX endpoint instead of duplicating its financial logic.
+      const pixResponse = await app.inject({
+        method: 'POST',
+        url: `/v1/accounts/${sourceAccount.id}/pix/transfers`,
+        headers: {
+          authorization,
+          'content-type': 'application/json',
+        },
+        payload: {
+          amount: moneyToString(amount),
+          pixKey: {
+            type: keyType,
+            value: pixKey,
+          },
+          consentId: input.consentId,
+          enrollmentId: input.enrollmentId,
+          description: input.description,
+        },
+      })
+
+      const body = pixResponse.json()
+
+      if (pixResponse.statusCode >= 400) {
+        return reply.code(pixResponse.statusCode).send(body)
+      }
+
+      return reply.code(pixResponse.statusCode).send({
+        paymentId: body.pixTransferId,
+        paymentMethod: input.paymentMethod,
+        status: body.status,
+        amount: body.amount,
+        balance: body.balance,
+        endToEndId: body.endToEndId,
+        consentId: body.consentId,
+        idempotentReplay: body.idempotentReplay,
+        createdAt: body.createdAt,
+      })
+    }
+
+    if (input.paymentMethod === 'BOLETO' && !input.boleto?.digitableLine) {
+      throw new AppError(400, 'boleto.digitableLine is required', 'PAYMENT_DATA_REQUIRED')
+    }
+
+    if (input.paymentMethod === 'BILL' && (!input.bill?.provider || !input.bill?.reference)) {
+      throw new AppError(400, 'bill.provider and bill.reference are required', 'PAYMENT_DATA_REQUIRED')
+    }
+
+    const paymentId = randomUUID()
+
     const result = await app.prisma.$transaction(async (tx) => {
-      // Ownership is revalidated while acquiring the MySQL/InnoDB row lock.
-      // This makes account authorization part of the financial transaction itself.
-      const ownedRows = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT a.id
-        FROM Account a
-        INNER JOIN Customer c ON c.id = a.customerId
-        WHERE a.id = ${accountId}
-          AND c.userId = ${user.sub}
-        FOR UPDATE
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM Account WHERE id = ${sourceAccount.id} FOR UPDATE
       `
 
-      if (ownedRows.length === 0) {
-        throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
-      }
-
-      // Re-check after acquiring the account lock to handle concurrent retries safely.
-      const replay = await tx.payment.findUnique({
-        where: { accountId_idempotencyKey: { accountId, idempotencyKey } },
-      })
-      if (replay) return { payment: replay, idempotentReplay: true }
-
       const lockedAccount = await tx.account.findFirst({
-        where: { id: accountId, customer: { is: { userId: user.sub } } },
+        where: {
+          id: sourceAccount.id,
+          status: 'ACTIVE',
+          customer: {
+            is: {
+              userId: user.sub,
+            },
+          },
+        },
       })
-      if (!lockedAccount) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
 
-      if (lockedAccount.status !== 'ACTIVE') {
-        throw new AppError(409, 'Account is not active', 'ACCOUNT_NOT_ACTIVE')
+      if (!lockedAccount) {
+        throw new AppError(404, 'Active account not found', 'ACCOUNT_NOT_FOUND')
       }
+
       if (lockedAccount.balance.lessThan(amount)) {
         throw new AppError(422, 'Insufficient balance', 'INSUFFICIENT_BALANCE')
       }
 
       const balanceAfter = lockedAccount.balance.sub(amount)
 
-      const transaction = await tx.transaction.create({
+      const description =
+        input.description ??
+        (input.paymentMethod === 'BOLETO'
+          ? `Boleto ${input.boleto!.digitableLine}`
+          : `Bill ${input.bill!.provider} ${input.bill!.reference}`)
+
+      await tx.transaction.create({
         data: {
-          accountId,
+          accountId: lockedAccount.id,
           type: 'DEBIT',
           amount,
           balanceBefore: lockedAccount.balance,
           balanceAfter,
-          description: input.description ?? `Payment to ${input.beneficiary.name}`,
+          referenceId: paymentId,
+          description,
         },
       })
 
-      const createdPayment = await tx.payment.create({
-        data: {
-          accountId,
-          amount,
-          beneficiaryName: input.beneficiary.name,
-          beneficiaryDoc: input.beneficiary.document,
-          description: input.description,
-          status: 'COMPLETED',
-          idempotencyKey,
-          transactionId: transaction.id,
-        },
+      await tx.account.update({
+        where: { id: lockedAccount.id },
+        data: { balance: balanceAfter },
       })
 
-      await tx.transaction.update({
-        where: { id: transaction.id },
-        data: { referenceId: createdPayment.id },
-      })
-
-      await tx.account.update({ where: { id: accountId }, data: { balance: balanceAfter } })
-      return { payment: createdPayment, idempotentReplay: false }
+      return {
+        balanceAfter,
+      }
     })
 
-    return reply.code(result.idempotentReplay ? 200 : 201).send({
-      paymentId: result.payment.id,
-      status: result.payment.status,
-      amount: moneyToString(result.payment.amount),
-      idempotentReplay: result.idempotentReplay,
-      createdAt: result.payment.createdAt,
+    return reply.code(201).send({
+      paymentId,
+      paymentMethod: input.paymentMethod,
+      status: 'COMPLETED',
+      amount: moneyToString(amount),
+      balance: moneyToString(result.balanceAfter),
+      createdAt: new Date().toISOString(),
     })
-  })
-
-  app.get('/v1/payments/:paymentId', { preHandler: app.authenticate }, async (request) => {
-    const { paymentId } = paymentIdSchema.parse(request.params)
-    const user = request.user as JwtUser
-
-    const payment = await app.prisma.payment.findFirst({
-      where: {
-        id: paymentId,
-        account: {
-          is: {
-            customer: {
-              is: { userId: user.sub },
-            },
-          },
-        },
-      },
-    })
-
-    // Same non-enumeration behavior for payment resources.
-    if (!payment) {
-      throw new AppError(404, 'Payment not found', 'PAYMENT_NOT_FOUND')
-    }
-
-    return {
-      paymentId: payment.id,
-      accountId: payment.accountId,
-      amount: moneyToString(payment.amount),
-      beneficiary: {
-        name: payment.beneficiaryName,
-        document: payment.beneficiaryDoc,
-      },
-      description: payment.description,
-      status: payment.status,
-      createdAt: payment.createdAt,
-    }
   })
 }
 
