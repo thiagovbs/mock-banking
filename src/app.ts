@@ -14,6 +14,19 @@ import   pixRoutes  from './modules/pix/routes.js'
 export async function buildApp() {
   const app = Fastify({ logger: true })
 
+  // Some MCP/AI Gateway clients send a JSON body without the
+  // `Content-Type: application/json` header (or with `text/plain`).
+  // Fastify would otherwise reject those with 415. Accept any body by
+  // attempting to parse it as JSON, falling back to the raw value.
+  app.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => {
+    const raw = typeof body === 'string' ? body : String(body)
+    try {
+      done(null, raw ? JSON.parse(raw) : {})
+    } catch {
+      done(null, raw)
+    }
+  })
+
   await app.register(swagger, {
     openapi: {
       info: {
