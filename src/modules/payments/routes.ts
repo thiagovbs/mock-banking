@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { JwtUser } from '../../plugins/auth.js'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString, parseMoney } from '../../shared/money.js'
+import { executePixTransfer } from '../pix/service.js'
 
 const paymentSchema = z.object({
   paymentMethod: z.enum(['PIX', 'QR_CODE', 'BOLETO', 'BILL']),
@@ -84,48 +85,30 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const keyType = inferPixKeyType(pixKey)
-      const authorization = request.headers.authorization
 
-      if (!authorization) {
-        throw new AppError(401, 'Authorization header is required', 'UNAUTHORIZED')
-      }
-
-      // Reuse the existing PIX endpoint instead of duplicating its financial logic.
-      const pixResponse = await app.inject({
-        method: 'POST',
-        url: `/v1/accounts/${sourceAccount.id}/pix/transfers`,
-        headers: {
-          authorization,
-          'content-type': 'application/json',
-        },
-        payload: {
-          amount: moneyToString(amount),
-          pixKey: {
-            type: keyType,
-            value: pixKey,
-          },
+      const result = await executePixTransfer({
+        prisma: app.prisma,
+        sourceAccountId: sourceAccount.id,
+        userId: user.sub,
+        amount,
+        input: {
+          pixKey: { type: keyType, value: pixKey },
           consentId,
           enrollmentId: input.enrollmentId,
           description: input.description,
         },
       })
 
-      const body = pixResponse.json()
-
-      if (pixResponse.statusCode >= 400) {
-        return reply.code(pixResponse.statusCode).send(body)
-      }
-
-      return reply.code(pixResponse.statusCode).send({
-        paymentId: body.pixTransferId,
+      return reply.code(result.idempotentReplay ? 200 : 201).send({
+        paymentId: result.transfer.id,
         paymentMethod: input.paymentMethod,
-        status: body.status,
-        amount: body.amount,
-        balance: body.balance,
-        endToEndId: body.endToEndId,
-        consentId: body.consentId ?? consentId,
-        idempotentReplay: body.idempotentReplay,
-        createdAt: body.createdAt,
+        status: result.transfer.status,
+        amount: moneyToString(result.transfer.amount),
+        balance: moneyToString(result.sourceBalanceAfter),
+        endToEndId: result.transfer.endToEndId,
+        consentId: result.transfer.consentId ?? consentId,
+        idempotentReplay: result.idempotentReplay,
+        createdAt: result.transfer.createdAt,
       })
     }
 
