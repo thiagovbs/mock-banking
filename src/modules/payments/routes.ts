@@ -8,7 +8,6 @@ import { moneyToString, parseMoney } from '../../shared/money.js'
 const paymentSchema = z.object({
   paymentMethod: z.enum(['PIX', 'QR_CODE', 'BOLETO', 'BILL']),
   amount: z.union([z.string(), z.number()]),
-  consentId: z.string().trim().min(1).max(255).optional(),
   enrollmentId: z.string().trim().min(1).max(255).optional(),
   description: z.string().trim().max(200).optional(),
 
@@ -48,6 +47,7 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
     const user = request.user as JwtUser
     const input = paymentSchema.parse(request.body)
     const amount = parseMoney(input.amount)
+    const consentId = randomUUID()
 
     const sourceAccount = await app.prisma.account.findFirst({
       where: {
@@ -83,10 +83,6 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
         )
       }
 
-      if (!input.consentId) {
-        throw new AppError(400, 'consentId is required for PIX payments', 'CONSENT_ID_REQUIRED')
-      }
-
       const keyType = inferPixKeyType(pixKey)
       const authorization = request.headers.authorization
 
@@ -108,7 +104,7 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
             type: keyType,
             value: pixKey,
           },
-          consentId: input.consentId,
+          consentId,
           enrollmentId: input.enrollmentId,
           description: input.description,
         },
@@ -127,7 +123,7 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
         amount: body.amount,
         balance: body.balance,
         endToEndId: body.endToEndId,
-        consentId: body.consentId,
+        consentId: body.consentId ?? consentId,
         idempotentReplay: body.idempotentReplay,
         createdAt: body.createdAt,
       })
@@ -201,6 +197,7 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(201).send({
       paymentId,
       paymentMethod: input.paymentMethod,
+      consentId,
       status: 'COMPLETED',
       amount: moneyToString(amount),
       balance: moneyToString(result.balanceAfter),
