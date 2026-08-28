@@ -85,6 +85,7 @@ describe('PIX endpoints', () => {
     it('executes a successful transfer', async () => {
       mock.account.findFirst.mockResolvedValue({
         id: SOURCE_ACC,
+        customerId: 'cust-1',
         status: 'ACTIVE',
         balance: decimal('500.00'),
       })
@@ -97,12 +98,10 @@ describe('PIX endpoints', () => {
       })
       mock.pixTransfer.findUnique.mockResolvedValue(null)
 
-      mock.$queryRaw.mockResolvedValue([])
-      mock.account.findUnique.mockResolvedValue({
-        id: DEST_ACC,
-        status: 'ACTIVE',
-        balance: decimal('200.00'),
-      })
+      mock.$queryRaw.mockResolvedValue([
+        { id: SOURCE_ACC, customerId: 'cust-1', status: 'ACTIVE', balance: decimal('500.00') },
+        { id: DEST_ACC, customerId: 'cust-2', status: 'ACTIVE', balance: decimal('200.00') },
+      ])
       mock.transaction.create
         .mockResolvedValueOnce({ id: 'tx-debit', balanceAfter: decimal('400.00') })
         .mockResolvedValueOnce({ id: 'tx-credit', balanceAfter: decimal('300.00') })

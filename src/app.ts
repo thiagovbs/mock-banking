@@ -6,6 +6,7 @@ import databasePlugin from './plugins/database.js'
 import authPlugin from './plugins/auth.js'
 import customerRoutes from './modules/customers/routes.js'
 import authRoutes from './modules/auth/routes.js'
+import oauthRoutes from './modules/auth/oauth.js'
 import accountRoutes from './modules/accounts/routes.js'
 import paymentRoutes from './modules/payments/routes.js'
 import { AppError } from './shared/errors.js'
@@ -20,8 +21,20 @@ export async function buildApp() {
   // attempting to parse it as JSON, falling back to the raw value.
   app.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => {
     const raw = typeof body === 'string' ? body : String(body)
+    if (!raw) {
+      return done(null, {})
+    }
+    const contentType = _req.headers['content-type'] || ''
+    if (contentType.includes('application/x-www-form-urlencoded')) {
+      const params = new URLSearchParams(raw)
+      const obj: Record<string, string> = {}
+      for (const [key, value] of params.entries()) {
+        obj[key] = value
+      }
+      return done(null, obj)
+    }
     try {
-      done(null, raw ? JSON.parse(raw) : {})
+      done(null, JSON.parse(raw))
     } catch {
       done(null, raw)
     }
@@ -62,6 +75,7 @@ export async function buildApp() {
 
   await app.register(customerRoutes)
   await app.register(authRoutes)
+  await app.register(oauthRoutes)
   await app.register(accountRoutes)
   await app.register(paymentRoutes)
   await app.register(pixRoutes)
