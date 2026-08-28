@@ -28,6 +28,7 @@ describe('POST /v1/me/payments (facade)', () => {
       // ownership of that same account. Both return the source account.
       mock.account.findFirst.mockResolvedValue({
         id: 'acc-source',
+        customerId: 'cust-1',
         status: 'ACTIVE',
         balance: decimal('500.00'),
       })
@@ -40,12 +41,10 @@ describe('POST /v1/me/payments (facade)', () => {
       })
       mock.pixTransfer.findUnique.mockResolvedValue(null)
 
-      mock.$queryRaw.mockResolvedValue([])
-      mock.account.findUnique.mockResolvedValue({
-        id: 'acc-dest',
-        status: 'ACTIVE',
-        balance: decimal('200.00'),
-      })
+      mock.$queryRaw.mockResolvedValue([
+        { id: 'acc-source', customerId: 'cust-1', status: 'ACTIVE', balance: decimal('500.00') },
+        { id: 'acc-dest', customerId: 'cust-2', status: 'ACTIVE', balance: decimal('200.00') },
+      ])
       mock.transaction.create
         .mockResolvedValueOnce({ id: 'tx-debit', balanceAfter: decimal('400.00') })
         .mockResolvedValueOnce({ id: 'tx-credit', balanceAfter: decimal('300.00') })

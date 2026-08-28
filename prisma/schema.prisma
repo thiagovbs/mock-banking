@@ -48,6 +48,15 @@ model User {
   customer     Customer?
 }
 
+model AuthRequest {
+  id          String   @id @default(uuid())
+  redirectUri String
+  userId      String?
+  code        String?  @unique
+  used        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+}
+
 model Customer {
   id        String    @id @default(uuid())
   userId    String    @unique

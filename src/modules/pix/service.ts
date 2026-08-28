@@ -129,20 +129,28 @@ export async function executePixTransfer(params: ExecutePixTransferParams): Prom
   const transferId = randomUUID()
 
   const result = await prisma.$transaction(async (tx) => {
+    // Lock both account rows in deterministic order and return them in a single
+    // round-trip, avoiding separate lock + read queries per account.
     const idsToLock = [sourceAccountId, destinationKey.accountId].sort()
-    for (const id of idsToLock) {
-      await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM Account WHERE id = ${id} FOR UPDATE
-      `
+    const lockedRows = await tx.$queryRaw<
+      Array<{ id: string; customerId: string; status: string; balance: Prisma.Decimal }>
+    >`
+      SELECT id, customerId, status, balance
+      FROM Account
+      WHERE id IN (${idsToLock[0]}, ${idsToLock[1]})
+      FOR UPDATE
+    `
+
+    const lockedById = new Map(lockedRows.map((row) => [row.id, row]))
+    const lockedSource = lockedById.get(sourceAccountId)
+    const lockedDestination = lockedById.get(destinationKey.accountId)
+
+    if (!lockedSource || lockedSource.customerId !== sourceAccount.customerId) {
+      throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
     }
-
-    const lockedSource = await tx.account.findFirst({
-      where: { id: sourceAccountId, customer: { is: { userId } } },
-    })
-    if (!lockedSource) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
-
-    const lockedDestination = await tx.account.findUnique({ where: { id: destinationKey.accountId } })
-    if (!lockedDestination) throw new AppError(404, 'Destination account not found', 'DESTINATION_ACCOUNT_NOT_FOUND')
+    if (!lockedDestination) {
+      throw new AppError(404, 'Destination account not found', 'DESTINATION_ACCOUNT_NOT_FOUND')
+    }
 
     const replay = await tx.pixTransfer.findUnique({ where: { consentId: input.consentId } })
     if (replay) {

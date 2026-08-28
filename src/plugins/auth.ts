@@ -21,7 +21,21 @@ export default fp(async (app) => {
 
   app.decorate('authenticate', async (request, reply) => {
     try {
-      await request.jwtVerify()
+      await request.jwtVerify({
+        extractToken: (req) => {
+          // Prefer the x-Authorization header (used by the AI agent), falling
+          // back to the standard Authorization: Bearer header.
+          const xAuth = req.headers['x-authorization']
+          if (typeof xAuth === 'string' && xAuth.trim()) {
+            return xAuth.trim()
+          }
+          const auth = req.headers.authorization
+          if (typeof auth === 'string' && /^Bearer\s/i.test(auth)) {
+            return auth.split(' ')[1]
+          }
+          return null
+        },
+      })
     } catch {
       reply.code(401).send({
         error: 'UNAUTHORIZED',
