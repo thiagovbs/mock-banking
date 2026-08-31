@@ -1,20 +1,22 @@
 services:
-  postgres:
-    image: postgres:17-alpine
-    container_name: banking-postgres
+  app:
+    build: .
+    container_name: banking-api
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      POSTGRES_DB: banking
-      POSTGRES_USER: banking
-      POSTGRES_PASSWORD: banking
+      # DATABASE_URL vem de variável de ambiente do host/CI (${DATABASE_URL}).
+      # Não é hardcoded aqui para não versionar a senha no repositório.
+      # Defina no EC2: export DATABASE_URL="mysql://user:senha@host:3306/Banking"
+      DATABASE_URL: "${DATABASE_URL}"
     ports:
-      - "5432:5432"
-    volumes:
-      - banking_pgdata:/var/lib/postgresql/data
+      # Publicado na porta 3100 (host) por segurança; internamente o app
+      # continua na 3000. Mapeamento: HOST:CONTAINER.
+      - "3100:3000"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U banking -d banking"]
-      interval: 5s
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
       timeout: 5s
       retries: 10
-
-volumes:
-  banking_pgdata:
+      start_period: 20s
