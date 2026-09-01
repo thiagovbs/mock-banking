@@ -83,6 +83,7 @@ model Account {
   pixKeys              PixKey[]
   pixTransfersSent     PixTransfer[] @relation("PixTransferSource")
   pixTransfersReceived PixTransfer[] @relation("PixTransferDestination")
+  paymentConsents      PaymentConsent[]
 }
 
 model Transaction {
@@ -173,4 +174,72 @@ model PixTransfer {
   @@index([sourceAccountId, createdAt])
   @@index([destinationAccountId, createdAt])
   @@index([pixKeyId, createdAt])
+}
+
+enum PaymentConsentStatus {
+  CREATED
+  AUTHORISED
+  PAYMENT_SUBMITTED
+  COMPLETED
+  EXPIRED
+}
+
+model PaymentConsent {
+  id                 String               @id @default(uuid())
+  externalConsentId  String?              @unique @db.VarChar(255)
+  userId             String
+  customerId         String
+  accountId          String
+  amount             Decimal              @db.Decimal(15, 2)
+  description        String?
+  creditorName       String
+  creditorDocument   String?
+  creditorKeyType    PixKeyType
+  creditorKeyValue   String               @db.VarChar(255)
+  status             PaymentConsentStatus @default(CREATED)
+  paymentId          String?              @unique
+  authorisationFlow  String?
+  fidoChallenge      String?
+  createdAt          DateTime             @default(now())
+  authorisedAt       DateTime?
+  submittedAt        DateTime?
+  expiredAt          DateTime?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+  @@index([accountId, createdAt])
+}
+
+enum EnrollmentStatus {
+  CREATED
+  ACCOUNT_HOLDER_CONFIRMED
+  FIDO_REGISTERED
+  USED
+}
+
+model Enrollment {
+  id          String           @id @default(uuid())
+  userId      String?
+  status      EnrollmentStatus @default(CREATED)
+  requestId   String?          @unique
+  code        String?          @unique
+  redirectUri String
+  challenge   String
+  used        Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model FidoCredential {
+  id           String   @id @default(uuid())
+  userId       String
+  enrollmentId String?  @unique
+  credentialId String   @unique
+  publicKey    String
+  counter      Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
 }
