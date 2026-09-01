@@ -6,9 +6,9 @@ services:
     env_file:
       - .env
     environment:
-      # DATABASE_URL vem de variável de ambiente do host/CI (${DATABASE_URL}).
-      # Não é hardcoded aqui para não versionar a senha no repositório.
-      # Defina no EC2: export DATABASE_URL="mysql://user:senha@host:3306/Banking"
+      # DATABASE_URL vem do shell do host (${DATABASE_URL}). Exporte antes de
+      # subir: export DATABASE_URL='mysql://user:senha@host:3306/Banking'
+      # Aspas simples preservam o "$" da senha.
       DATABASE_URL: "${DATABASE_URL}"
     ports:
       # Publicado na porta 3100 (host) por segurança; internamente o app

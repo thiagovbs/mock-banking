@@ -11,6 +11,8 @@ import accountRoutes from './modules/accounts/routes.js'
 import paymentRoutes from './modules/payments/routes.js'
 import { AppError } from './shared/errors.js'
 import   pixRoutes  from './modules/pix/routes.js'
+import aspspRoutes from './modules/aspsp/routes.js'
+import jsrRoutes from './modules/jsr/routes.js'
 
 export async function buildApp() {
   const app = Fastify({ logger: true })
@@ -79,6 +81,8 @@ export async function buildApp() {
   await app.register(accountRoutes)
   await app.register(paymentRoutes)
   await app.register(pixRoutes)
+  await app.register(aspspRoutes)
+  await app.register(jsrRoutes)
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {

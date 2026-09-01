@@ -11,6 +11,7 @@ export type JwtUser = {
 declare module 'fastify' {
   interface FastifyInstance {
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>
+    requireInitiator: (request: FastifyRequest, reply: FastifyReply) => Promise<void>
   }
 }
 
@@ -41,6 +42,21 @@ export default fp(async (app) => {
       reply.code(401).send({
         error: 'UNAUTHORIZED',
         message: 'Invalid or missing access token',
+      })
+      return
+    }
+  })
+
+  // Autentica a Iniciadora (aplicação de serviço) via header x-initiator-key.
+  // Usado nos endpoints ITP/PISP JSR, que são chamados pela iniciadora (não
+  // por um usuário logado), portanto sem JWT de usuário.
+  app.decorate('requireInitiator', async (request, reply) => {
+    const secret = process.env.INITIATOR_SERVICE_SECRET
+    const presented = request.headers['x-initiator-key']
+    if (!secret || !presented || presented !== secret) {
+      reply.code(401).send({
+        error: 'UNAUTHORIZED',
+        message: 'Invalid or missing initiator key',
       })
       return
     }
