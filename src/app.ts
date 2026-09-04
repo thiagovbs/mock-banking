@@ -13,6 +13,7 @@ import { AppError } from './shared/errors.js'
 import   pixRoutes  from './modules/pix/routes.js'
 import aspspRoutes from './modules/aspsp/routes.js'
 import jsrRoutes from './modules/jsr/routes.js'
+import qrCodeRoutes from './modules/qrcode/routes.js'
 
 export async function buildApp() {
   const app = Fastify({ logger: true })
@@ -83,6 +84,7 @@ export async function buildApp() {
   await app.register(pixRoutes)
   await app.register(aspspRoutes)
   await app.register(jsrRoutes)
+  await app.register(qrCodeRoutes)
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {

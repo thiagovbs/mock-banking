@@ -84,6 +84,7 @@ model Account {
   pixTransfersSent     PixTransfer[] @relation("PixTransferSource")
   pixTransfersReceived PixTransfer[] @relation("PixTransferDestination")
   paymentConsents      PaymentConsent[]
+  paymentRequests      PaymentRequest[]
 }
 
 model Transaction {
@@ -148,6 +149,7 @@ model PixKey {
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Restrict)
   pixReceipts  PixReceipt[]
   pixTransfers PixTransfer[]
+  paymentRequests PaymentRequest[]
 
   @@index([accountId, createdAt])
 }
@@ -242,4 +244,30 @@ model FidoCredential {
   createdAt    DateTime @default(now())
 
   @@index([userId, createdAt])
+}
+
+enum PaymentRequestStatus {
+  ACTIVE
+  PAID
+  EXPIRED
+  CANCELLED
+}
+
+model PaymentRequest {
+  id          String               @id @default(uuid())
+  txid        String               @unique @db.VarChar(255)
+  accountId   String
+  pixKeyId    String
+  amount      Decimal              @db.Decimal(15, 2)
+  description String?              @db.VarChar(255)
+  payload     String               @db.Text
+  status      PaymentRequestStatus @default(ACTIVE)
+  expiresAt   DateTime
+  paidAt      DateTime?
+  createdAt   DateTime             @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  pixKey  PixKey  @relation(fields: [pixKeyId], references: [id], onDelete: Restrict)
+
+  @@index([accountId, createdAt])
 }
