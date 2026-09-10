@@ -118,15 +118,21 @@ const jsrRoutes: FastifyPluginAsync = async (app) => {
     async (request, reply) => {
       const { enrollmentId } = enrollmentParams.parse(request.params)
       const input = accountHolderSchema.parse(request.body)
-      const userName = input.data.fidoUser?.name ?? 'Cooperado'
 
-      // O titular é resolvido pelo username do fidoUser (simplificado). Em uma
-      // implementação real, o usuário seria autenticado aqui.
-      const user = await app.prisma.user.findFirst({
-        where: { username: userName.toLowerCase() },
+      // O titular é resolvido pelo número da conta informado em debtorAccount.
+      // Assim o enrollment fica vinculado ao usuário dono da conta (User - Customer - Account).
+      const account = await app.prisma.account.findFirst({
+        where: { accountNumber: input.data.debtorAccount.number },
         include: { customer: true },
       })
-      if (!user?.customer) {
+      if (!account?.customer) {
+        throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
+      }
+      const user = await app.prisma.user.findUnique({
+        where: { id: account.customer.userId },
+        include: { customer: true },
+      })
+      if (!user) {
         throw new AppError(404, 'User not found', 'USER_NOT_FOUND')
       }
 
