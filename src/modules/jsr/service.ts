@@ -49,6 +49,41 @@ export async function createEnrollment(prisma: PrismaClient, redirectUri: string
   }
 }
 
+export async function listAccountDevices(prisma: PrismaClient, accountNumber: string) {
+  const account = await prisma.account.findFirst({
+    where: { accountNumber },
+    include: { customer: true },
+  })
+  if (!account?.customer) {
+    throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
+  }
+
+  const [enrollments, credentials] = await Promise.all([
+    prisma.enrollment.findMany({
+      where: { userId: account.customer.userId },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.fidoCredential.findMany({
+      where: { userId: account.customer.userId },
+      orderBy: { createdAt: 'desc' },
+    }),
+  ])
+
+  return {
+    accountNumber: account.accountNumber,
+    branch: account.branch,
+    devices: enrollments.map((enrollment) => ({
+      enrollmentId: enrollment.id,
+      status: enrollment.status,
+      used: enrollment.used,
+      createdAt: enrollment.createdAt,
+      credentialId:
+        credentials.find((credential) => credential.enrollmentId === enrollment.id)
+          ?.credentialId ?? null,
+    })),
+  }
+}
+
 export async function getEnrollment(prisma: PrismaClient, enrollmentId: string) {
   const enrollment = await prisma.enrollment.findUnique({ where: { id: enrollmentId } })
   if (!enrollment) throw new AppError(404, 'Enrollment not found', 'ENROLLMENT_NOT_FOUND')

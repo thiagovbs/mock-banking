@@ -12,6 +12,7 @@ import {
   getEnrollment,
   getJsPaymentStatus,
   initiateJsPayment,
+  listAccountDevices,
   registerFidoCredential,
 } from './service.js'
 
@@ -99,6 +100,17 @@ const jsrRoutes: FastifyPluginAsync = async (app) => {
     const { enrollmentId } = enrollmentParams.parse(request.params)
     return getEnrollment(app.prisma, enrollmentId)
   })
+
+  app.get(
+    '/open-banking/itp/v2/accounts/:accountNumber/enrollments',
+    { preHandler: app.requireInitiator },
+    async (request) => {
+      const { accountNumber } = z
+        .object({ accountNumber: z.string().min(1) })
+        .parse(request.params)
+      return listAccountDevices(app.prisma, accountNumber)
+    },
+  )
 
   app.patch(
     '/open-banking/enrollment-supports/v2/enrollment-supports/:enrollmentId/account-holder-confirmed',
