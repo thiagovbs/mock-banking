@@ -642,4 +642,92 @@ describe('Compartilhamento de dados', () => {
       expect(mock.dataSharingConsent.findMany).not.toHaveBeenCalled()
     })
   })
+
+  describe('pedido pendente: o titular enderecado pode agir sobre ele', () => {
+    function pendingRow(overrides: Record<string, unknown> = {}) {
+      // Antes da autorizacao o consentimento so conhece o CPF do titular.
+      return consentRow({
+        status: 'AWAITING_AUTHORISATION',
+        granterUserId: null,
+        granterCustomerId: null,
+        accounts: [],
+        ...overrides,
+      })
+    }
+
+    it('recusa o pedido e a recusa fica atribuida a ele', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(pendingRow())
+      mock.dataSharingConsent.update.mockResolvedValue(
+        consentRow({ status: 'REJECTED', rejectedBy: 'USER', rejectReason: 'CUSTOMER_MANUALLY_REJECTED' }),
+      )
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/v1/me/data-sharing/consents/${CONSENT_ID}`,
+        headers: { authorization: `Bearer ${granterToken}` },
+      })
+
+      expect(response.statusCode).toBe(204)
+      expect(mock.dataSharingConsent.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'REJECTED',
+            rejectedBy: 'USER',
+            rejectReason: 'CUSTOMER_MANUALLY_REJECTED',
+            // O vinculo com o titular e gravado junto com a recusa.
+            granterUserId: GRANTER.sub,
+            granterCustomerId: GRANTER.customerId,
+          }),
+        }),
+      )
+    })
+
+    it('consulta o pedido enderecado a ele', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(pendingRow())
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/open-banking/consents/v3/consents/${CONSENT_ID}`,
+        headers: { authorization: `Bearer ${granterToken}` },
+      })
+
+      expect(response.statusCode).toBe(200)
+      expect(response.json().data.status).toBe('AWAITING_AUTHORISATION')
+    })
+
+    it('a receptora continua podendo desistir do proprio pedido', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(pendingRow())
+      mock.dataSharingConsent.update.mockResolvedValue(
+        consentRow({ status: 'REJECTED', rejectedBy: 'TPP', rejectReason: 'CUSTOMER_MANUALLY_REJECTED' }),
+      )
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/open-banking/consents/v3/consents/${CONSENT_ID}`,
+        headers: { authorization: `Bearer ${granteeToken}` },
+      })
+
+      expect(response.statusCode).toBe(204)
+      // Recusa pela receptora nao vincula titular nenhum.
+      const data = mock.dataSharingConsent.update.mock.calls[0][0].data
+      expect(data.rejectedBy).toBe('TPP')
+      expect(data.granterUserId).toBeUndefined()
+    })
+
+    it('nao libera um pedido enderecado a outro CPF', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(
+        pendingRow({ granterDocument: '99999999999' }),
+      )
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/v1/me/data-sharing/consents/${CONSENT_ID}`,
+        headers: { authorization: `Bearer ${granterToken}` },
+      })
+
+      expect(response.statusCode).toBe(403)
+      expect(response.json().error).toBe('CONSENT_FORBIDDEN')
+      expect(mock.dataSharingConsent.update).not.toHaveBeenCalled()
+    })
+  })
 })

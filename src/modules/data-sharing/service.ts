@@ -256,8 +256,8 @@ export async function createDataSharingConsent(params: CreateConsentParams): Pro
 export type GetConsentParams = {
   prisma: PrismaClient
   consentId: string
-  /** Quem esta lendo: a receptora (granteeCustomerId) ou o titular (userId). */
-  requester: { userId: string; customerId: string }
+  /** Quem esta lendo: a receptora, o titular, ou o titular de um pedido pendente. */
+  requester: Requester
 }
 
 export async function getDataSharingConsent(params: GetConsentParams): Promise<ConsentView> {
@@ -267,12 +267,35 @@ export async function getDataSharingConsent(params: GetConsentParams): Promise<C
   return toConsentView(consent)
 }
 
-function assertParticipant(consent: any, requester: { userId: string; customerId: string }): void {
-  const isGrantee = consent.granteeCustomerId === requester.customerId
-  const isGranter = consent.granterUserId === requester.userId
-  if (!isGrantee && !isGranter) {
+export type Requester = { userId: string; customerId: string; document?: string }
+
+/**
+ * `ADDRESSED_GRANTER` e o titular de um pedido que ele ainda nao autorizou:
+ * ate a autorizacao o consentimento so conhece o documento dele, entao
+ * compara-lo por granterUserId o deixaria de fora do proprio pedido -- sem
+ * poder nem ler nem recusar o que aparece na caixa de entrada dele.
+ */
+type ParticipantRole = 'GRANTEE' | 'GRANTER' | 'ADDRESSED_GRANTER'
+
+function participantRole(consent: any, requester: Requester): ParticipantRole | null {
+  if (consent.granteeCustomerId === requester.customerId) return 'GRANTEE'
+  if (consent.granterUserId && consent.granterUserId === requester.userId) return 'GRANTER'
+  if (
+    !consent.granterUserId &&
+    requester.document &&
+    normalizeDocument(requester.document) === normalizeDocument(consent.granterDocument)
+  ) {
+    return 'ADDRESSED_GRANTER'
+  }
+  return null
+}
+
+function assertParticipant(consent: any, requester: Requester): ParticipantRole {
+  const role = participantRole(consent, requester)
+  if (!role) {
     throw new AppError(403, 'Consent does not belong to this user', 'CONSENT_FORBIDDEN')
   }
+  return role
 }
 
 export type AuthoriseConsentParams = {
@@ -364,7 +387,7 @@ export async function authoriseDataSharingConsent(
 export type RejectConsentParams = {
   prisma: PrismaClient
   consentId: string
-  requester: { userId: string; customerId: string }
+  requester: Requester
 }
 
 /**
@@ -374,13 +397,13 @@ export type RejectConsentParams = {
 export async function rejectDataSharingConsent(params: RejectConsentParams): Promise<ConsentView> {
   const { prisma, consentId, requester } = params
   const consent = await findConsent(prisma, consentId)
-  assertParticipant(consent, requester)
+  const role = assertParticipant(consent, requester)
 
   if (consent.status === 'REJECTED') {
     return toConsentView(consent)
   }
 
-  const isGranter = consent.granterUserId === requester.userId
+  const isGranter = role === 'GRANTER' || role === 'ADDRESSED_GRANTER'
   const wasAuthorised = consent.status === 'AUTHORISED'
   const now = new Date()
 
@@ -392,6 +415,11 @@ export async function rejectDataSharingConsent(params: RejectConsentParams): Pro
       rejectReason: wasAuthorised ? 'CUSTOMER_MANUALLY_REVOKED' : 'CUSTOMER_MANUALLY_REJECTED',
       rejectedAt: now,
       statusUpdatedAt: now,
+      // Recusa de um pedido que ele ainda nao tinha autorizado: o vinculo e
+      // gravado aqui, para que a recusa fique atribuida a uma pessoa.
+      ...(role === 'ADDRESSED_GRANTER'
+        ? { granterUserId: requester.userId, granterCustomerId: requester.customerId }
+        : {}),
     },
     include: { accounts: true },
   })
