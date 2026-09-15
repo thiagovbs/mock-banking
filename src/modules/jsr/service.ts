@@ -2,7 +2,7 @@ import { Prisma, PrismaClient } from '@prisma/client'
 import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString } from '../../shared/money.js'
-import { executePixTransfer } from '../pix/service.js'
+import { settlePaymentConsent } from '../payments/consent.js'
 
 /**
  * FIDO simplificado (Opção B): geramos challenges e derivamos uma "publicKey"
@@ -125,10 +125,22 @@ export async function confirmEnrollment(
   })
   if (!enrollment) throw new AppError(400, 'Invalid authorization code', 'INVALID_AUTH_CODE')
 
-  await prisma.enrollment.update({
-    where: { id: enrollment.id },
+  // O requestId acompanha o code desde a criacao do enrollment (e volta a
+  // Iniciadora como `state`). Sem conferi-lo, um code valido era aceito em
+  // qualquer contexto.
+  if (enrollment.requestId !== requestId) {
+    throw new AppError(400, 'Authorization code does not match the request', 'INVALID_AUTH_CODE')
+  }
+
+  // A troca e de uso unico. O status no where faz a reserva atomica, entao
+  // duas chamadas concorrentes com o mesmo code nao passam as duas.
+  const claimed = await prisma.enrollment.updateMany({
+    where: { id: enrollment.id, used: false },
     data: { used: true },
   })
+  if (claimed.count === 0) {
+    throw new AppError(400, 'Authorization code already used', 'AUTH_CODE_USED')
+  }
 
   return {
     fidoRegistrationOptions: {
@@ -240,42 +252,12 @@ export async function authoriseJsConsent(
 
 export async function initiateJsPayment(
   prisma: PrismaClient,
-  userId: string,
+  _userId: string,
   consentId: string,
 ) {
-  const consent = await prisma.paymentConsent.findUnique({ where: { id: consentId } })
-  if (!consent) throw new AppError(404, 'Consent not found', 'CONSENT_NOT_FOUND')
-  if (consent.status !== 'AUTHORISED') {
-    throw new AppError(409, 'Consent is not authorized', 'CONSENT_NOT_AUTHORISED')
-  }
-
-  const paymentId = randomUUID()
-
-  const result = await executePixTransfer({
-    prisma,
-    sourceAccountId: consent.accountId,
-    userId,
-    amount: consent.amount,
-    input: {
-      pixKey: { type: consent.creditorKeyType, value: consent.creditorKeyValue },
-      consentId: consent.id,
-      description: consent.description ?? `PIX to ${consent.creditorName}`,
-    },
-  })
-
-  await prisma.paymentConsent.update({
-    where: { id: consent.id },
-    data: { status: 'COMPLETED', paymentId, submittedAt: new Date() },
-  })
-
-  return {
-    paymentId,
-    consentId: consent.id,
-    endToEndId: result.transfer.endToEndId,
-    status: result.transfer.status,
-    amount: moneyToString(result.transfer.amount),
-    balance: moneyToString(result.sourceBalanceAfter),
-  }
+  // O titular vem do proprio consentimento; a rota JSR e autenticada pela
+  // Iniciadora, nao por um usuario logado.
+  return settlePaymentConsent(prisma, consentId)
 }
 
 export async function getJsPaymentStatus(prisma: PrismaClient, paymentId: string) {

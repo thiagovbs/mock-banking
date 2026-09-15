@@ -15,6 +15,24 @@ type ModelDelegate = {
   count: MockFn
 }
 
+/** Um delegate por modelo do schema, para que qualquer modulo seja testavel. */
+const MODEL_NAMES = [
+  'user',
+  'customer',
+  'account',
+  'transaction',
+  'payment',
+  'pixKey',
+  'pixTransfer',
+  'paymentConsent',
+  'paymentRequest',
+  'enrollment',
+  'fidoCredential',
+  'authRequest',
+] as const
+
+type ModelName = (typeof MODEL_NAMES)[number]
+
 function createModelDelegate(): ModelDelegate {
   return {
     findUnique: vi.fn(),
@@ -30,14 +48,7 @@ function createModelDelegate(): ModelDelegate {
   }
 }
 
-export type MockPrismaClient = {
-  user: ModelDelegate
-  customer: ModelDelegate
-  account: ModelDelegate
-  transaction: ModelDelegate
-  payment: ModelDelegate
-  pixKey: ModelDelegate
-  pixTransfer: ModelDelegate
+export type MockPrismaClient = Record<ModelName, ModelDelegate> & {
   $transaction: MockFn
   $queryRaw: MockFn
   $connect: MockFn
@@ -50,14 +61,12 @@ export type MockPrismaClient = {
  * as the transactional client (`tx`), mirroring how the app uses it.
  */
 export function createMockPrisma(): MockPrismaClient {
+  const models = Object.fromEntries(
+    MODEL_NAMES.map((name) => [name, createModelDelegate()]),
+  ) as Record<ModelName, ModelDelegate>
+
   const prisma: MockPrismaClient = {
-    user: createModelDelegate(),
-    customer: createModelDelegate(),
-    account: createModelDelegate(),
-    transaction: createModelDelegate(),
-    payment: createModelDelegate(),
-    pixKey: createModelDelegate(),
-    pixTransfer: createModelDelegate(),
+    ...models,
     $transaction: vi.fn(),
     $queryRaw: vi.fn(),
     $connect: vi.fn(),
