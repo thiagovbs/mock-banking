@@ -391,6 +391,10 @@ describe('Compartilhamento de dados', () => {
       mock.dataSharingConsent.findMany
         .mockResolvedValueOnce([consentRow()])
         .mockResolvedValueOnce([])
+      mock.customer.findMany.mockResolvedValue([
+        { id: GRANTEE.customerId, name: 'Maria Fintech' },
+        { id: GRANTER.customerId, name: 'Joao da Silva' },
+      ])
 
       const response = await app.inject({
         method: 'GET',
@@ -574,6 +578,68 @@ describe('Compartilhamento de dados', () => {
 
       expect(response.statusCode).toBe(200)
       expect(response.body).toContain('Compartilhamento autorizado')
+    })
+  })
+
+  describe('caixa de entrada de consentimentos', () => {
+    function inbox(query = '') {
+      return app.inject({
+        method: 'GET',
+        url: `/v1/me/data-sharing/consents${query}`,
+        headers: { authorization: `Bearer ${granterToken}` },
+      })
+    }
+
+    it('traz o nome de quem pediu acesso, nao so o consentId', async () => {
+      mock.dataSharingConsent.findMany
+        .mockResolvedValueOnce([consentRow({ status: 'AWAITING_AUTHORISATION', granterCustomerId: null })])
+        .mockResolvedValueOnce([])
+      mock.customer.findMany.mockResolvedValue([{ id: GRANTEE.customerId, name: 'Maria Fintech' }])
+
+      const response = await inbox()
+
+      expect(response.statusCode).toBe(200)
+      const pedido = response.json().granted[0]
+      expect(pedido.granteeName).toBe('Maria Fintech')
+      // Ninguem autorizou ainda: o pedido so conhece o documento do titular.
+      expect(pedido.granterName).toBeNull()
+    })
+
+    it('filtra por status', async () => {
+      mock.dataSharingConsent.findMany.mockResolvedValue([])
+
+      const response = await inbox('?status=AWAITING_AUTHORISATION')
+
+      expect(response.statusCode).toBe(200)
+      for (const call of mock.dataSharingConsent.findMany.mock.calls) {
+        expect(call[0].where.status).toEqual({ in: ['AWAITING_AUTHORISATION'] })
+      }
+    })
+
+    it('aceita varios status separados por virgula', async () => {
+      mock.dataSharingConsent.findMany.mockResolvedValue([])
+
+      await inbox('?status=AWAITING_AUTHORISATION,AUTHORISED')
+
+      expect(mock.dataSharingConsent.findMany.mock.calls[0][0].where.status).toEqual({
+        in: ['AWAITING_AUTHORISATION', 'AUTHORISED'],
+      })
+    })
+
+    it('sem filtro, nao restringe status', async () => {
+      mock.dataSharingConsent.findMany.mockResolvedValue([])
+
+      await inbox()
+
+      expect(mock.dataSharingConsent.findMany.mock.calls[0][0].where.status).toBeUndefined()
+    })
+
+    it('recusa status desconhecido', async () => {
+      const response = await inbox('?status=PENDENTE')
+
+      expect(response.statusCode).toBe(400)
+      expect(response.json().error).toBe('INVALID_STATUS')
+      expect(mock.dataSharingConsent.findMany).not.toHaveBeenCalled()
     })
   })
 })

@@ -11,6 +11,7 @@ import {
   listDataSharingConsents,
   logConsentAccess,
   parseConsentId,
+  parseStatuses,
   rejectDataSharingConsent,
   requireActiveConsent,
   toConsentUrn,
@@ -45,6 +46,11 @@ const createConsentSchema = z.object({
   // loop para quem iniciou a jornada (um chatbot, por exemplo), no mesmo
   // formato do redirect_uri de /v1/auth/authorize.
   redirect_uri: z.url().max(500).optional(),
+})
+
+// status=A,B ou status=A&status=B; ausente = todos.
+const listConsentsQuerySchema = z.object({
+  status: z.union([z.string(), z.array(z.string())]).optional(),
 })
 
 const authoriseSchema = z.object({
@@ -89,6 +95,8 @@ function consentPayload(consent: ConsentView) {
     permissions: consent.permissions,
     expirationDateTime: consent.expirationDateTime,
     loggedUser: { document: { identification: consent.loggedUserDocument, rel: 'CPF' } },
+    ...(consent.granteeName !== undefined ? { granteeName: consent.granteeName } : {}),
+    ...(consent.granterName !== undefined ? { granterName: consent.granterName } : {}),
     ...(consent.rejectedBy
       ? { rejection: { rejectedBy: consent.rejectedBy, reason: { code: consent.rejectReason } } }
       : {}),
@@ -367,8 +375,11 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
 
   app.get('/v1/me/data-sharing/consents', { preHandler: app.authenticate }, async (request) => {
     const user = request.user as JwtUser
+    const query = listConsentsQuerySchema.parse(request.query)
     const actor = await loadActor(app, user)
-    const consents = await listDataSharingConsents({ prisma: app.prisma, user: actor })
+
+    const statuses = parseStatuses(normalizeStatusFilter(query.status))
+    const consents = await listDataSharingConsents({ prisma: app.prisma, user: actor, statuses })
 
     return {
       granted: consents.granted.map(consentPayload),
@@ -549,6 +560,19 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
   app.get('/open-banking/accounts/v2/accounts/:accountId/transactions', authenticated, getSharedTransactions)
   app.get(`${SHARED_DATA_PREFIX}/accounts/:accountId/transactions`, authenticated, getSharedTransactions)
 
+}
+
+/**
+ * Aceita status=A,B e status=A&status=B -- a primeira forma porque e o que cabe
+ * em um argumento unico de tool; a segunda por ser a convencao de query.
+ */
+function normalizeStatusFilter(value: string | string[] | undefined): string[] {
+  if (!value) return []
+  const list = Array.isArray(value) ? value : [value]
+  return list
+    .flatMap((item) => item.split(','))
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean)
 }
 
 /**

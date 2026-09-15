@@ -24,6 +24,25 @@ export const DATA_SHARING_PERMISSIONS = [
 
 export type DataSharingPermission = (typeof DATA_SHARING_PERMISSIONS)[number]
 
+export const DATA_SHARING_STATUSES = [
+  'AWAITING_AUTHORISATION',
+  'AUTHORISED',
+  'REJECTED',
+] as const
+
+export type DataSharingStatus = (typeof DATA_SHARING_STATUSES)[number]
+
+export function parseStatuses(input: string[]): DataSharingStatus[] {
+  const unique = Array.from(new Set(input))
+  const invalid = unique.filter(
+    (status) => !DATA_SHARING_STATUSES.includes(status as DataSharingStatus),
+  )
+  if (invalid.length > 0) {
+    throw new AppError(400, `Unsupported status: ${invalid.join(', ')}`, 'INVALID_STATUS')
+  }
+  return unique as DataSharingStatus[]
+}
+
 /** Teto regulatorio do OFB para consentimentos com prazo. */
 const MAX_EXPIRATION_MONTHS = 12
 
@@ -156,9 +175,15 @@ export type ConsentView = {
   accountIds: string[]
   rejectedBy: string | null
   rejectReason: string | null
+  /** Quem pediu acesso. Sem isso o cliente so teria o consentId para exibir. */
+  granteeName?: string
+  /** Dono dos dados. Nulo enquanto o pedido nao foi autorizado por ninguem. */
+  granterName?: string | null
 }
 
-export function toConsentView(consent: any): ConsentView {
+export type PartyNames = { granteeName?: string; granterName?: string | null }
+
+export function toConsentView(consent: any, names?: PartyNames): ConsentView {
   return {
     consentId: toConsentUrn(consent.id),
     status: consent.status,
@@ -170,6 +195,8 @@ export function toConsentView(consent: any): ConsentView {
     accountIds: (consent.accounts ?? []).map((link: any) => link.accountId),
     rejectedBy: consent.rejectedBy ?? null,
     rejectReason: consent.rejectReason ?? null,
+    ...(names?.granteeName !== undefined ? { granteeName: names.granteeName } : {}),
+    ...(names?.granterName !== undefined ? { granterName: names.granterName } : {}),
   }
 }
 
@@ -375,6 +402,8 @@ export async function rejectDataSharingConsent(params: RejectConsentParams): Pro
 export type ListConsentsParams = {
   prisma: PrismaClient
   user: { userId: string; customerId: string; document: string }
+  /** Vazio ou ausente = todos os status. */
+  statuses?: DataSharingStatus[]
 }
 
 /**
@@ -386,12 +415,14 @@ export async function listDataSharingConsents(params: ListConsentsParams): Promi
   granted: ConsentView[]
   received: ConsentView[]
 }> {
-  const { prisma, user } = params
+  const { prisma, user, statuses } = params
   const document = normalizeDocument(user.document)
+  const statusFilter = statuses && statuses.length > 0 ? { status: { in: statuses } } : {}
 
   const [grantedRaw, receivedRaw] = await Promise.all([
     prisma.dataSharingConsent.findMany({
       where: {
+        ...statusFilter,
         OR: [{ granterUserId: user.userId }, { granterDocument: document }],
       },
       include: { accounts: true },
@@ -399,7 +430,7 @@ export async function listDataSharingConsents(params: ListConsentsParams): Promi
       take: 100,
     }),
     prisma.dataSharingConsent.findMany({
-      where: { granteeCustomerId: user.customerId },
+      where: { ...statusFilter, granteeCustomerId: user.customerId },
       include: { accounts: true },
       orderBy: { createdAt: 'desc' },
       take: 100,
@@ -409,9 +440,43 @@ export async function listDataSharingConsents(params: ListConsentsParams): Promi
   const granted = await Promise.all(grantedRaw.map((consent: any) => applyExpiry(prisma, consent)))
   const received = await Promise.all(receivedRaw.map((consent: any) => applyExpiry(prisma, consent)))
 
+  const names = await loadPartyNames(prisma, [...granted, ...received])
+
   return {
-    granted: granted.map(toConsentView),
-    received: received.map(toConsentView),
+    granted: granted.map((consent: any) => toConsentView(consent, namesOf(names, consent))),
+    received: received.map((consent: any) => toConsentView(consent, namesOf(names, consent))),
+  }
+}
+
+/**
+ * Resolve os nomes das partes em uma consulta so. Sem eles o cliente exibiria
+ * apenas o consentId, e "autorizar urn:banking:0e84..." nao e uma pergunta que
+ * alguem consiga responder.
+ */
+async function loadPartyNames(
+  prisma: PrismaClient,
+  consents: any[],
+): Promise<Map<string, string>> {
+  const ids = new Set<string>()
+  for (const consent of consents) {
+    if (consent.granteeCustomerId) ids.add(consent.granteeCustomerId)
+    if (consent.granterCustomerId) ids.add(consent.granterCustomerId)
+  }
+  if (ids.size === 0) return new Map()
+
+  const customers = await prisma.customer.findMany({
+    where: { id: { in: Array.from(ids) } },
+    select: { id: true, name: true },
+  })
+
+  return new Map(customers.map((customer: any) => [customer.id, customer.name]))
+}
+
+function namesOf(names: Map<string, string>, consent: any): PartyNames {
+  return {
+    granteeName: names.get(consent.granteeCustomerId) ?? 'Instituição receptora',
+    // Nulo enquanto ninguem autorizou: o pedido so conhece o documento.
+    granterName: consent.granterCustomerId ? names.get(consent.granterCustomerId) ?? null : null,
   }
 }
 

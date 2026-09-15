@@ -406,12 +406,17 @@ encontra quando entrar, sem precisar de link nenhum:
 
 ```bash
 # Titular: o que está pendente de autorização minha
-curl http://localhost:3000/v1/me/data-sharing/consents -H "Authorization: Bearer $TOKEN_TITULAR"
-# -> granted[] inclui os AWAITING_AUTHORISATION endereçados ao CPF dele
+curl "http://localhost:3000/v1/me/data-sharing/consents?status=AWAITING_AUTHORISATION"   -H "Authorization: Bearer $TOKEN_TITULAR"
 
 # Receptora: acompanha o desfecho do pedido que fez
 curl http://localhost:3000/open-banking/consents/v3/consents/$CONSENT_ID   -H "Authorization: Bearer $TOKEN_RECEPTORA"
 ```
+
+O filtro aceita lista (`?status=AWAITING_AUTHORISATION,AUTHORISED`) ou o parâmetro
+repetido; sem ele, vêm todos. Cada item traz `granteeName` — quem está pedindo — e
+`granterName`, nulo enquanto ninguém autorizou, porque até lá o pedido conhece
+apenas o documento. É o que permite perguntar *"o Thiago Veloso quer ver seu
+saldo, autorizo?"* em vez de exibir um `consentId` para o usuário.
 
 Isso permite montar a jornada como caixa de entrada — a receptora pede, o titular
 resolve quando quiser — em vez de exigir que os dois lados estejam na mesma
@@ -486,7 +491,7 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 | GET | `/v1/data-sharing/consents/{consentId}/authorise` | — | Tela de autorização (HTML) |
 | POST | `/v1/data-sharing/consents/{consentId}/authorise` | JWT (titular) | Autoriza em modo texto, com `accountIds` |
 | GET | `/v1/data-sharing/consents/{consentId}/accounts` | JWT (titular) | Contas que o titular pode oferecer neste consentimento |
-| GET | `/v1/me/data-sharing/consents` | JWT | Consentimentos concedidos e recebidos |
+| GET | `/v1/me/data-sharing/consents` | JWT | Consentimentos concedidos e recebidos (`?status=` filtra; traz `granteeName`) |
 | DELETE | `/v1/me/data-sharing/consents/{consentId}` | JWT | Revoga um consentimento concedido |
 | GET | `/open-banking/accounts/v2/accounts` | JWT + `x-consent-id` | Contas dentro do consentimento |
 | GET | `/open-banking/accounts/v2/accounts/{accountId}` | JWT + `x-consent-id` | Identificação da conta compartilhada |
