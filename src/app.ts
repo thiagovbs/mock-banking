@@ -66,26 +66,6 @@ export async function buildApp() {
   await app.register(databasePlugin)
   await app.register(authPlugin)
 
-  app.get('/health', async (_request, reply) => {
-    try {
-      await app.prisma.$queryRaw`SELECT 1`
-      return { status: 'ok', database: 'reachable' }
-    } catch (error) {
-      app.log.error(error)
-      return reply.code(503).send({ status: 'error', database: 'unreachable' })
-    }
-  })
-
-  await app.register(customerRoutes)
-  await app.register(authRoutes)
-  await app.register(oauthRoutes)
-  await app.register(accountRoutes)
-  await app.register(paymentRoutes)
-  await app.register(pixRoutes)
-  await app.register(aspspRoutes)
-  await app.register(jsrRoutes)
-  await app.register(qrCodeRoutes)
-
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
       return reply.code(400).send({
@@ -108,6 +88,27 @@ export async function buildApp() {
       message: 'Unexpected server error',
     })
   })
+
+  app.get('/health', async (_request, reply) => {
+    try {
+      await app.prisma.$queryRaw`SELECT 1`
+      return { status: 'ok', database: 'reachable' }
+    } catch (error) {
+      app.log.error(error)
+      return reply.code(503).send({ status: 'error', database: 'unreachable' })
+    }
+  })
+
+  await app.register(customerRoutes)
+  await app.register(authRoutes)
+  await app.register(oauthRoutes)
+  await app.register(accountRoutes)
+  await app.register(paymentRoutes)
+  await app.register(pixRoutes)
+  await app.register(aspspRoutes)
+  await app.register(jsrRoutes)
+  await app.register(qrCodeRoutes)
+
 
   return app
 }
