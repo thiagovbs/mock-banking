@@ -5,6 +5,7 @@ import { JwtUser } from '../../plugins/auth.js'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString, parseMoney } from '../../shared/money.js'
 import { executePixTransfer, normalizePixKey, validatePixKey } from './service.js'
+import { getPixReceipt } from './receipt.js'
 
 const paramsSchema = z.object({ accountId: z.uuid() })
 
@@ -132,6 +133,15 @@ const pixRoutes: FastifyPluginAsync = async (app) => {
       idempotentReplay: result.idempotentReplay,
       createdAt: result.transfer.createdAt,
     })
+  })
+
+  app.get('/v1/pix/transfers/:pixTransferId', { preHandler: app.authenticate }, async (request) => {
+    const { pixTransferId } = z
+      .object({ pixTransferId: z.uuid() })
+      .parse(request.params)
+    const user = request.user as JwtUser
+
+    return getPixReceipt(app.prisma, user.sub, pixTransferId)
   })
 }
 

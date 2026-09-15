@@ -23,9 +23,17 @@ enum PaymentStatus {
   FAILED
 }
 
+// Mantido apos a remocao de PixReceipt: PixTransfer.status ainda o utiliza.
 enum PixReceiptStatus {
   COMPLETED
   FAILED
+}
+
+enum PaymentMethod {
+  PIX
+  QR_CODE
+  BOLETO
+  BILL
 }
 
 enum PixKeyType {
@@ -79,7 +87,6 @@ model Account {
   customer             Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
   transactions         Transaction[]
   payments             Payment[]
-  pixReceipts          PixReceipt[]
   pixKeys              PixKey[]
   pixTransfersSent     PixTransfer[] @relation("PixTransferSource")
   pixTransfersReceived PixTransfer[] @relation("PixTransferDestination")
@@ -105,37 +112,35 @@ model Transaction {
 model Payment {
   id              String        @id @default(uuid())
   accountId       String
+  method          PaymentMethod
   amount          Decimal       @db.Decimal(15, 2)
-  beneficiaryName String
-  beneficiaryDoc  String
   description     String?
   status          PaymentStatus
   idempotencyKey  String
   transactionId   String?       @unique
+
+  // Beneficiario: a fachada atual nao coleta esses dados, mas o registro
+  // antigo os tinha e um pagamento de boleto/conta pode voltar a preenche-los.
+  beneficiaryName String?
+  beneficiaryDoc  String?
+
+  // PIX e QR_CODE
+  pixKey          String?       @db.VarChar(255)
+  endToEndId      String?       @db.VarChar(255)
+  pixTransferId   String?       @unique
+
+  // BOLETO
+  digitableLine   String?       @db.VarChar(100)
+
+  // BILL
+  billProvider    String?       @db.VarChar(100)
+  billReference   String?       @db.VarChar(255)
+
   createdAt       DateTime      @default(now())
   account         Account       @relation(fields: [accountId], references: [id], onDelete: Restrict)
 
   @@unique([accountId, idempotencyKey])
   @@index([accountId, createdAt])
-}
-
-model PixReceipt {
-  id            String           @id @default(uuid())
-  accountId     String
-  pixKeyId      String?
-  endToEndId    String           @unique
-  consentId     String?          @unique @db.VarChar(255)
-  enrollmentId  String?          @db.VarChar(255)
-  amount        Decimal          @db.Decimal(15, 2)
-  description   String?
-  status        PixReceiptStatus @default(COMPLETED)
-  transactionId String           @unique
-  createdAt     DateTime         @default(now())
-  account       Account          @relation(fields: [accountId], references: [id], onDelete: Restrict)
-  pixKey        PixKey?          @relation(fields: [pixKeyId], references: [id], onDelete: Restrict)
-
-  @@index([accountId, createdAt])
-  @@index([pixKeyId, createdAt])
 }
 
 model PixKey {
@@ -147,7 +152,6 @@ model PixKey {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Restrict)
-  pixReceipts  PixReceipt[]
   pixTransfers PixTransfer[]
   paymentRequests PaymentRequest[]
 

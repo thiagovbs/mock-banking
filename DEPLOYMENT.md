@@ -118,7 +118,9 @@ GET    /v1/accounts/{accountId}/transactions
 GET    /v1/accounts/{accountId}/pix/keys
 POST   /v1/accounts/{accountId}/pix/keys
 POST   /v1/accounts/{accountId}/pix/transfers
+GET    /v1/pix/transfers/{pixTransferId}
 POST   /v1/me/payments
+GET    /v1/payments/{paymentId}
 POST   /v1/me/qrcodes
 GET    /v1/me/qrcodes/{id}
 DELETE /v1/me/qrcodes/{id}

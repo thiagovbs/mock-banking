@@ -306,12 +306,14 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 | GET | `/v1/accounts/{accountId}/pix/keys` | JWT | Lista chaves PIX da conta |
 | POST | `/v1/accounts/{accountId}/pix/keys` | JWT | Cadastra chave PIX (ou gera EVP) |
 | POST | `/v1/accounts/{accountId}/pix/transfers` | JWT | Realiza transferência PIX |
+| GET | `/v1/pix/transfers/{pixTransferId}` | JWT | Comprovante da transferência (pagador e recebedor) |
 
 ### Pagamentos
 
 | Método | Endpoint | Auth | Descrição |
 |---|---|---|---|
 | POST | `/v1/me/payments` | JWT | Fachada de pagamento (PIX/QR_CODE/BOLETO/BILL) |
+| GET | `/v1/payments/{paymentId}` | JWT | Consulta um pagamento registrado |
 | POST | `/v1/aspsp/payments/consents` | JWT | Cria consentimento de pagamento (ASPSP) |
 | POST | `/v1/aspsp/payments` | JWT | Submete pagamento a partir de um consent |
 | GET | `/v1/aspsp/payments/{consentId}` | JWT | Consulta consentimento de pagamento |
@@ -336,9 +338,9 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 - **Customer** — titular (nome, documento, e-mail), ligado a um `User`
 - **Account** — conta corrente (saldo `Decimal(15,2)`, status)
 - **Transaction** — ledger (CREDIT/DEBIT com `balanceBefore`/`balanceAfter`)
+- **Payment** — registro consultável de um pagamento da fachada, nos quatro métodos
 - **PixKey** — chave PIX associada a uma conta
 - **PixTransfer** — transferência PIX (origem ↔ destino, com `endToEndId` e `consentId` únicos)
-- **PixReceipt** — recebimento PIX (resolve conta pela chave e associa `enrollmentId`)
 - **PaymentConsent** — consentimento de pagamento (ASPSP/JSR) com `fidoChallenge`
 - **Enrollment** — vínculo de dispositivo ITP (status: CREATED → ACCOUNT_HOLDER_CONFIRMED → FIDO_REGISTERED)
 - **FidoCredential** — credencial FIDO do dispositivo
@@ -358,7 +360,10 @@ Transferências PIX e pagamentos bloqueiam as linhas das contas com MySQL `SELEC
 
 - **PIX**: a combinação `consentId` é única em `PixTransfer`; repetir o mesmo `consentId` retorna o transfer já existente (replay idempotente), sem novo débito.
 - **PIX recebido**: o `endToEndId` é único e atua como identificador de idempotência.
-- **Pagamento fachada**: gera um `consentId` interno (`uuid`) por chamada.
+- **Pagamento fachada**: o header `Idempotency-Key` é opcional e único por conta
+  (`@@unique([accountId, idempotencyKey])`). Repetir a chamada com a mesma chave
+  devolve o pagamento já registrado, com `200` e `idempotentReplay: true`, sem
+  novo débito. Sem o header, cada chamada é uma operação nova.
 
 ### PIX como única origem de crédito
 

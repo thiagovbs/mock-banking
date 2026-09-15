@@ -1,4 +1,5 @@
 import { FastifyPluginAsync } from 'fastify'
+import { Payment } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { JwtUser } from '../../plugins/auth.js'
@@ -31,12 +32,50 @@ const paymentSchema = z.object({
   }).optional(),
 })
 
+const paymentIdParams = z.object({ paymentId: z.uuid() })
+
+/**
+ * Serializa um Payment. Os campos especificos de cada metodo ficam nulos nos
+ * demais, entao a leitura e a mesma para os quatro.
+ */
+function serializePayment(payment: Payment) {
+  return {
+    paymentId: payment.id,
+    accountId: payment.accountId,
+    paymentMethod: payment.method,
+    amount: moneyToString(payment.amount),
+    status: payment.status,
+    description: payment.description,
+    idempotencyKey: payment.idempotencyKey,
+    transactionId: payment.transactionId,
+    pix:
+      payment.method === 'PIX' || payment.method === 'QR_CODE'
+        ? {
+            key: payment.pixKey,
+            endToEndId: payment.endToEndId,
+            pixTransferId: payment.pixTransferId,
+          }
+        : null,
+    boleto: payment.method === 'BOLETO' ? { digitableLine: payment.digitableLine } : null,
+    bill:
+      payment.method === 'BILL'
+        ? { provider: payment.billProvider, reference: payment.billReference }
+        : null,
+    createdAt: payment.createdAt,
+  }
+}
+
 const paymentRoutes: FastifyPluginAsync = async (app) => {
   app.post('/v1/me/payments', { preHandler: app.authenticate }, async (request, reply) => {
     const user = request.user as JwtUser
     const input = paymentSchema.parse(request.body)
     const amount = parseMoney(input.amount)
-    const consentId = randomUUID()
+
+    // Idempotency-Key e opcional: sem ele cada chamada e uma operacao nova.
+    // Com ele, repetir a chamada devolve o pagamento ja registrado.
+    const headerKey = request.headers['idempotency-key']
+    const idempotencyKey =
+      (Array.isArray(headerKey) ? headerKey[0] : headerKey)?.trim() || randomUUID()
 
     const sourceAccount = await app.prisma.account.findFirst({
       where: {
@@ -54,6 +93,13 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
 
     if (!sourceAccount) {
       throw new AppError(404, 'Active account not found', 'ACCOUNT_NOT_FOUND')
+    }
+
+    const replay = await app.prisma.payment.findUnique({
+      where: { accountId_idempotencyKey: { accountId: sourceAccount.id, idempotencyKey } },
+    })
+    if (replay) {
+      return reply.code(200).send({ ...serializePayment(replay), idempotentReplay: true })
     }
 
     if (input.paymentMethod === 'PIX' || input.paymentMethod === 'QR_CODE') {
@@ -81,22 +127,33 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
         amount,
         input: {
           pixKey: { type: keyType, value: pixKey },
-          consentId,
+          consentId: randomUUID(),
           enrollmentId: input.enrollmentId,
           description: input.description,
         },
       })
 
-      return reply.code(result.idempotentReplay ? 200 : 201).send({
-        paymentId: result.transfer.id,
-        paymentMethod: input.paymentMethod,
-        status: result.transfer.status,
-        amount: moneyToString(result.transfer.amount),
+      // O Payment e criado depois que a transferencia commita: PixTransfer e a
+      // fonte de verdade do dinheiro, Payment e o registro consultavel.
+      const payment = await app.prisma.payment.create({
+        data: {
+          accountId: sourceAccount.id,
+          method: input.paymentMethod,
+          amount: result.transfer.amount,
+          description: input.description,
+          status: 'COMPLETED',
+          idempotencyKey,
+          transactionId: result.transfer.debitTransactionId,
+          pixKey: result.normalizedKey,
+          endToEndId: result.transfer.endToEndId,
+          pixTransferId: result.transfer.id,
+        },
+      })
+
+      return reply.code(201).send({
+        ...serializePayment(payment),
         balance: moneyToString(result.sourceBalanceAfter),
-        endToEndId: result.transfer.endToEndId,
-        consentId: result.transfer.consentId ?? consentId,
-        idempotentReplay: result.idempotentReplay,
-        createdAt: result.transfer.createdAt,
+        idempotentReplay: false,
       })
     }
 
@@ -107,8 +164,6 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
     if (input.paymentMethod === 'BILL' && (!input.bill?.provider || !input.bill?.reference)) {
       throw new AppError(400, 'bill.provider and bill.reference are required', 'PAYMENT_DATA_REQUIRED')
     }
-
-    const paymentId = randomUUID()
 
     const result = await app.prisma.$transaction(async (tx) => {
       await tx.$queryRaw<Array<{ id: string }>>`
@@ -143,16 +198,37 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
           ? `Boleto ${input.boleto!.digitableLine}`
           : `Bill ${input.bill!.provider} ${input.bill!.reference}`)
 
-      await tx.transaction.create({
+      // Boleto e conta nao geram PixTransfer, entao o Payment e gravado aqui,
+      // na mesma transacao do debito.
+      const payment = await tx.payment.create({
+        data: {
+          accountId: lockedAccount.id,
+          method: input.paymentMethod,
+          amount,
+          description: input.description ?? description,
+          status: 'COMPLETED',
+          idempotencyKey,
+          digitableLine: input.paymentMethod === 'BOLETO' ? input.boleto!.digitableLine : null,
+          billProvider: input.paymentMethod === 'BILL' ? input.bill!.provider : null,
+          billReference: input.paymentMethod === 'BILL' ? input.bill!.reference : null,
+        },
+      })
+
+      const transaction = await tx.transaction.create({
         data: {
           accountId: lockedAccount.id,
           type: 'DEBIT',
           amount,
           balanceBefore: lockedAccount.balance,
           balanceAfter,
-          referenceId: paymentId,
+          referenceId: payment.id,
           description,
         },
+      })
+
+      const linkedPayment = await tx.payment.update({
+        where: { id: payment.id },
+        data: { transactionId: transaction.id },
       })
 
       await tx.account.update({
@@ -160,20 +236,31 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
         data: { balance: balanceAfter },
       })
 
-      return {
-        balanceAfter,
-      }
+      return { payment: linkedPayment, balanceAfter }
     })
 
     return reply.code(201).send({
-      paymentId,
-      paymentMethod: input.paymentMethod,
-      consentId,
-      status: 'COMPLETED',
-      amount: moneyToString(amount),
+      ...serializePayment(result.payment),
       balance: moneyToString(result.balanceAfter),
-      createdAt: new Date().toISOString(),
+      idempotentReplay: false,
     })
+  })
+
+  app.get('/v1/payments/:paymentId', { preHandler: app.authenticate }, async (request) => {
+    const user = request.user as JwtUser
+    const { paymentId } = paymentIdParams.parse(request.params)
+
+    // A titularidade entra na propria consulta. Pagamento de outro titular
+    // tambem devolve 404, para nao permitir enumeracao.
+    const payment = await app.prisma.payment.findFirst({
+      where: {
+        id: paymentId,
+        account: { customer: { is: { userId: user.sub } } },
+      },
+    })
+
+    if (!payment) throw new AppError(404, 'Payment not found', 'PAYMENT_NOT_FOUND')
+    return serializePayment(payment)
   })
 }
 

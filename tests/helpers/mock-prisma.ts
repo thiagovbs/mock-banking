@@ -37,7 +37,6 @@ export type MockPrismaClient = {
   transaction: ModelDelegate
   payment: ModelDelegate
   pixKey: ModelDelegate
-  pixReceipt: ModelDelegate
   pixTransfer: ModelDelegate
   $transaction: MockFn
   $queryRaw: MockFn
@@ -58,7 +57,6 @@ export function createMockPrisma(): MockPrismaClient {
     transaction: createModelDelegate(),
     payment: createModelDelegate(),
     pixKey: createModelDelegate(),
-    pixReceipt: createModelDelegate(),
     pixTransfer: createModelDelegate(),
     $transaction: vi.fn(),
     $queryRaw: vi.fn(),

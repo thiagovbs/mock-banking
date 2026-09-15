@@ -25,6 +25,7 @@ export type PixTransferResult = {
     enrollmentId: string | null
     status: string
     amount: Prisma.Decimal
+    debitTransactionId: string
     createdAt: Date
   }
   sourceBalanceAfter: Prisma.Decimal
@@ -153,6 +154,7 @@ export async function executePixTransfer(params: ExecutePixTransferParams): Prom
         enrollmentId: existing.enrollmentId,
         status: existing.status,
         amount: existing.amount,
+        debitTransactionId: existing.debitTransactionId,
         createdAt: existing.createdAt,
       },
       sourceBalanceAfter: debit.balanceAfter,
@@ -263,6 +265,7 @@ export async function executePixTransfer(params: ExecutePixTransferParams): Prom
       enrollmentId: result.transfer.enrollmentId,
       status: result.transfer.status,
       amount: result.transfer.amount,
+      debitTransactionId: result.transfer.debitTransactionId,
       createdAt: result.transfer.createdAt,
     },
     sourceBalanceAfter: result.sourceBalanceAfter,
