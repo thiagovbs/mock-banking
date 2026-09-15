@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizePixKey, validatePixKey } from '../../src/modules/pix/service.js'
+import { inferPixKeyType, normalizePixKey, validatePixKey } from '../../src/modules/pix/service.js'
 import { AppError } from '../../src/shared/errors.js'
 
 describe('normalizePixKey', () => {
@@ -68,6 +68,57 @@ describe('validatePixKey', () => {
   it('throws INVALID_PIX_KEY code', () => {
     try {
       validatePixKey('CPF', '123')
+      expect.unreachable()
+    } catch (error) {
+      expect((error as AppError).code).toBe('INVALID_PIX_KEY')
+      expect((error as AppError).statusCode).toBe(400)
+    }
+  })
+})
+
+describe('inferPixKeyType', () => {
+  it.each([
+    ['joao@example.com', 'EMAIL'],
+    ['12345678901', 'CPF'],
+    ['016.881.663-60', 'CPF'],
+    ['12345678000199', 'CNPJ'],
+    ['12.345.678/0001-99', 'CNPJ'],
+    ['+5511999998888', 'PHONE'],
+    ['9f1b7c2e-4a5d-4c8b-9e3f-1a2b3c4d5e6f', 'EVP'],
+    ['9F1B7C2E-4A5D-4C8B-9E3F-1A2B3C4D5E6F', 'EVP'],
+  ])('infers %s as %s', (value, expected) => {
+    expect(inferPixKeyType(value)).toBe(expected)
+  })
+
+  it('trims surrounding whitespace before inferring', () => {
+    expect(inferPixKeyType('  12345678901  ')).toBe('CPF')
+  })
+
+  // An e-mail whose local part has 11 digits used to be read as a CPF by the
+  // JSR copy, which stripped non-digits before testing for '@'.
+  it('reads a digit-only local part as EMAIL, not CPF', () => {
+    expect(inferPixKeyType('12345678901@bank.com')).toBe('EMAIL')
+  })
+
+  // A UUID made only of digits and dashes used to survive the document test
+  // once the dashes were stripped.
+  it('reads an all-digit UUID as EVP, not a document', () => {
+    expect(inferPixKeyType('12345678-1234-4123-8123-123456789012')).toBe('EVP')
+  })
+
+  it('does not read a document embedded in a larger string as CPF', () => {
+    expect(() => inferPixKeyType('foo12345678901')).toThrow(AppError)
+  })
+
+  // The JSR copy returned EVP for anything it could not classify, which failed
+  // later with a confusing "EVP must be a valid UUID" message.
+  it.each([['not-a-key'], [''], ['123']])('throws for unclassifiable %s', (value) => {
+    expect(() => inferPixKeyType(value)).toThrow(AppError)
+  })
+
+  it('throws INVALID_PIX_KEY with status 400', () => {
+    try {
+      inferPixKeyType('not-a-key')
       expect.unreachable()
     } catch (error) {
       expect((error as AppError).code).toBe('INVALID_PIX_KEY')

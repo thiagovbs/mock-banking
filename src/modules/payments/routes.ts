@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { JwtUser } from '../../plugins/auth.js'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString, parseMoney } from '../../shared/money.js'
-import { executePixTransfer } from '../pix/service.js'
+import { executePixTransfer, inferPixKeyType } from '../pix/service.js'
 
 const paymentSchema = z.object({
   paymentMethod: z.enum(['PIX', 'QR_CODE', 'BOLETO', 'BILL']),
@@ -30,18 +30,6 @@ const paymentSchema = z.object({
     reference: z.string().trim().min(1).max(255),
   }).optional(),
 })
-
-function inferPixKeyType(value: string): 'CPF' | 'CNPJ' | 'EMAIL' | 'PHONE' | 'EVP' {
-  const trimmed = value.trim()
-
-  if (trimmed.includes('@')) return 'EMAIL'
-  if (/^\d{11}$/.test(trimmed)) return 'CPF'
-  if (/^\d{14}$/.test(trimmed)) return 'CNPJ'
-  if (/^\+?\d{10,15}$/.test(trimmed)) return 'PHONE'
-  if (z.string().uuid().safeParse(trimmed).success) return 'EVP'
-
-  throw new AppError(400, 'Could not infer PIX key type', 'INVALID_PIX_KEY')
-}
 
 const paymentRoutes: FastifyPluginAsync = async (app) => {
   app.post('/v1/me/payments', { preHandler: app.authenticate }, async (request, reply) => {

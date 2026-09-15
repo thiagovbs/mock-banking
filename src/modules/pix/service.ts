@@ -64,6 +64,41 @@ export function validatePixKey(type: PixKeyType, value: string): void {
   }
 }
 
+/** Um EVP e um UUID; aceita maiusculas porque normalizePixKey so baixa depois. */
+const EVP_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Uma chave so pode ser CPF/CNPJ se for inteiramente digitos e pontuacao de documento. */
+const DOCUMENT_PATTERN = /^[\d.\-/]+$/
+
+/**
+ * Deduz o tipo de uma chave PIX informada sem tipo explicito (fachada de
+ * pagamentos e campo `proxy` da jornada JSR).
+ *
+ * A ordem dos testes importa:
+ * - EMAIL primeiro, porque um endereco pode ter digitos suficientes para
+ *   parecer um documento depois que a pontuacao e removida.
+ * - EVP antes de CPF/CNPJ, porque um UUID pode ser composto so de digitos e
+ *   hifens e, uma vez removidos os hifens, cair no teste de tamanho.
+ * - CPF/CNPJ exigem que a string inteira seja documento, para que algo como
+ *   `foo12345678901` nao seja aceito.
+ */
+export function inferPixKeyType(value: string): PixKeyType {
+  const trimmed = value.trim()
+
+  if (trimmed.includes('@')) return 'EMAIL'
+  if (EVP_PATTERN.test(trimmed)) return 'EVP'
+
+  if (DOCUMENT_PATTERN.test(trimmed)) {
+    const digits = trimmed.replace(/\D/g, '')
+    if (digits.length === 11) return 'CPF'
+    if (digits.length === 14) return 'CNPJ'
+  }
+
+  if (/^\+?\d{10,15}$/.test(trimmed)) return 'PHONE'
+
+  throw new AppError(400, 'Could not infer PIX key type', 'INVALID_PIX_KEY')
+}
+
 function generateEndToEndId(): string {
   const now = new Date()
   const timestamp = [

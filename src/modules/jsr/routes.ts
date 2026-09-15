@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { AppError } from '../../shared/errors.js'
 import { parseMoney } from '../../shared/money.js'
+import { inferPixKeyType } from '../pix/service.js'
 import {
   accountHolderConfirmed,
   authoriseJsConsent,
@@ -208,15 +209,6 @@ const jsrRoutes: FastifyPluginAsync = async (app) => {
     const { paymentId } = paymentParams.parse(request.params)
     return getJsPaymentStatus(app.prisma, paymentId)
   })
-}
-
-function inferPixKeyType(value: string): 'CPF' | 'CNPJ' | 'EMAIL' | 'PHONE' | 'EVP' {
-  const cleaned = value.replace(/\D/g, '')
-  if (cleaned.length === 11) return 'CPF'
-  if (cleaned.length === 14) return 'CNPJ'
-  if (value.includes('@')) return 'EMAIL'
-  if (/^\+?\d{10,15}$/.test(value)) return 'PHONE'
-  return 'EVP'
 }
 
 export default jsrRoutes
