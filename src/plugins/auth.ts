@@ -1,6 +1,18 @@
 import fp from 'fastify-plugin'
 import jwt from '@fastify/jwt'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { FastifyReply, FastifyRequest } from 'fastify'
+
+/**
+ * Compara dois segredos em tempo constante. O hash previo iguala o tamanho dos
+ * buffers, tanto porque timingSafeEqual exige comprimentos iguais quanto para
+ * nao vazar o tamanho do segredo pela duracao da chamada.
+ */
+function secretsMatch(presented: string, expected: string): boolean {
+  const a = createHash('sha256').update(presented).digest()
+  const b = createHash('sha256').update(expected).digest()
+  return timingSafeEqual(a, b)
+}
 
 export type JwtUser = {
   sub: string
@@ -70,7 +82,7 @@ export default fp(async (app) => {
   // por um usuário logado), portanto sem JWT de usuário.
   app.decorate('requireInitiator', async (request, reply) => {
     const presented = request.headers['x-initiator-key']
-    if (!presented || presented !== initiatorSecret) {
+    if (typeof presented !== 'string' || !secretsMatch(presented, initiatorSecret)) {
       reply.code(401).send({
         error: 'UNAUTHORIZED',
         message: 'Invalid or missing initiator key',
