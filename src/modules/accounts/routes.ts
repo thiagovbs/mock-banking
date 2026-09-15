@@ -1,11 +1,25 @@
 import { FastifyPluginAsync } from 'fastify'
 import { randomInt } from 'node:crypto'
+import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { JwtUser } from '../../plugins/auth.js'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString } from '../../shared/money.js'
 
 const accountIdParams = z.object({ accountId: z.uuid() })
+
+// accountNumber tem 6 digitos e e @unique, entao sorteios colidem muito antes
+// de o espaco se esgotar (aniversario: ~1 em 1000 ja perto de 1.000 contas).
+// Sem retry a colisao vaza como P2002 e vira 500.
+const ACCOUNT_NUMBER_ATTEMPTS = 5
+
+function generateAccountNumber(): string {
+  return String(randomInt(100000, 1000000))
+}
+
+function isAccountNumberTaken(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
+}
 
 async function requireOwnedAccount(app: any, accountId: string, userId: string) {
   // Ownership is enforced in the query itself. Returning 404 for both an
@@ -48,16 +62,30 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
 
   app.post('/v1/accounts', { preHandler: app.authenticate }, async (request, reply) => {
     const user = request.user as JwtUser
-    const accountNumber = String(randomInt(100000, 999999))
 
     // customerId is always taken from the authenticated token, never from the request body.
-    const account = await app.prisma.account.create({
-      data: {
-        customerId: user.customerId,
-        branch: '0001',
-        accountNumber,
-      },
-    })
+    let account
+    for (let attempt = 1; ; attempt++) {
+      try {
+        account = await app.prisma.account.create({
+          data: {
+            customerId: user.customerId,
+            branch: '0001',
+            accountNumber: generateAccountNumber(),
+          },
+        })
+        break
+      } catch (error) {
+        if (!isAccountNumberTaken(error)) throw error
+        if (attempt === ACCOUNT_NUMBER_ATTEMPTS) {
+          throw new AppError(
+            503,
+            'Could not allocate a free account number, please retry',
+            'ACCOUNT_NUMBER_UNAVAILABLE',
+          )
+        }
+      }
+    }
 
     return reply.code(201).send({
       id: account.id,
