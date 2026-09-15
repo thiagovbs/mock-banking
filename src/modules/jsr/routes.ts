@@ -86,9 +86,11 @@ const jsrRoutes: FastifyPluginAsync = async (app) => {
   // -------- ITP: Enrollment de dispositivo --------
 
   app.post('/open-banking/itp/v2/enrollments', { preHandler: app.requireInitiator }, async (request, reply) => {
+    // request.host preserva a porta; request.hostname a descarta, e esta URL e
+    // persistida no enrollment e usada depois para devolver code+state.
     const redirectUri =
       (request.body as { redirect_uri?: string } | undefined)?.redirect_uri ||
-      `${request.protocol}://${request.hostname}/callback`
+      `${request.protocol}://${request.host}/callback`
     const result = await createEnrollment(app.prisma, redirectUri)
     return reply
       .header('x-itp-enrollment-id', result.enrollmentId)
