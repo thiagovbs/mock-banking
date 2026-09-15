@@ -179,10 +179,11 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     const user = request.user as JwtUser
     const { consentId } = consentParams.parse(request.params)
 
+    const requester = await loadActor(app, user)
     const consent = await getDataSharingConsent({
       prisma: app.prisma,
       consentId: parseConsentId(consentId),
-      requester: { userId: user.sub, customerId: user.customerId },
+      requester,
     })
 
     return envelope(request, consentPayload(consent))
@@ -193,10 +194,11 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     const user = request.user as JwtUser
     const { consentId } = consentParams.parse(request.params)
 
+    const requester = await loadActor(app, user)
     await rejectDataSharingConsent({
       prisma: app.prisma,
       consentId: parseConsentId(consentId),
-      requester: { userId: user.sub, customerId: user.customerId },
+      requester,
     })
 
     return reply.code(204).send()
@@ -350,17 +352,10 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     const session = verifyConsentSession(app, input.token)
     const granter = await loadActor(app, session)
 
-    // Recusa antes de autorizar: o consentimento ainda nao tem granterUserId,
-    // entao o vinculo e feito aqui para que a recusa fique atribuida a ele.
-    await app.prisma.dataSharingConsent.updateMany({
-      where: { id: page.id, granterUserId: null, granterDocument: granter.document.replace(/\D/g, '') },
-      data: { granterUserId: granter.userId, granterCustomerId: granter.customerId },
-    })
-
     await rejectDataSharingConsent({
       prisma: app.prisma,
       consentId: page.id,
-      requester: { userId: granter.userId, customerId: granter.customerId },
+      requester: granter,
     })
 
     const back = consentCallbackUrl(page.redirectUri, page.id, 'REJECTED')
@@ -391,10 +386,11 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     const user = request.user as JwtUser
     const { consentId } = consentParams.parse(request.params)
 
+    const requester = await loadActor(app, user)
     await rejectDataSharingConsent({
       prisma: app.prisma,
       consentId: parseConsentId(consentId),
-      requester: { userId: user.sub, customerId: user.customerId },
+      requester,
     })
 
     return reply.code(204).send()
