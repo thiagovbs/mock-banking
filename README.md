@@ -15,6 +15,7 @@ Backend bancário simplificado construído com Node.js, TypeScript, Fastify, Pri
 - Fachada de pagamentos (`/v1/me/payments`) com PIX, QR_CODE, BOLETO e BILL
 - Fluxo OAuth simplificado (autorize → login → token)
 - **Jornada JSR (Open Finance)**: ITP enrollment, registro FIDO, consentimento e pagamento sem redirect
+- **Jornada de compartilhamento de dados (Open Finance)**: consentimento para outra conta ler saldo e extrato, conta a conta, com prazo definido ou indeterminado, autorizável por tela ou em texto, e revogável a qualquer momento
 - Controle de concorrência com `SELECT ... FOR UPDATE`
 - Idempotência de PIX por `consentId` e `endToEndId`
 - Swagger UI
@@ -282,6 +283,103 @@ curl http://localhost:3000/open-banking/pisp/payments/v5/jsr/pix/payments/<payme
   -H 'x-initiator-key: <INITIATOR_SERVICE_SECRET>'
 ```
 
+## Jornada de compartilhamento de dados (Open Finance)
+
+O titular autoriza **outra conta** a ler o **saldo** e o **extrato** das contas
+que ele escolher, pelo prazo que ele definir. Os contratos seguem o padrão do
+Open Finance Brasil: `Consents v3` para o consentimento e `Accounts v2` para a
+leitura dos dados. A "instituição receptora" aqui é simplesmente outro cliente
+do banco.
+
+Duas coisas são deliberadas nesta jornada:
+
+- **Escopo conta a conta.** O consentimento não vale para "as contas do
+  fulano", e sim para as contas que ele marcou. Contas criadas depois ficam de
+  fora.
+- **Prazo opcional.** Enviar `expirationDateTime` cria um consentimento com
+  validade (no máximo 12 meses, como na regulação); omiti-lo cria um
+  consentimento **por prazo indeterminado**, que vale até a revogação.
+
+### 1. Receptora pede o consentimento
+
+Autenticada com o **JWT dela** (é ela quem quer ver os dados), informando o CPF
+do titular e as permissões desejadas:
+
+```bash
+curl -X POST http://localhost:3000/open-banking/consents/v3/consents \
+  -H "Authorization: Bearer $TOKEN_RECEPTORA" -H 'Content-Type: application/json' \
+  -d '{
+    "data": {
+      "loggedUser": { "document": { "identification": "12345678901", "rel": "CPF" } },
+      "permissions": ["ACCOUNTS_READ", "ACCOUNTS_BALANCES_READ", "ACCOUNTS_TRANSACTIONS_READ"]
+    }
+  }'
+```
+
+Sem `expirationDateTime` o consentimento é por prazo indeterminado. A resposta
+nasce em `AWAITING_AUTHORISATION` e traz, em `links.redirect`, a URL da tela de
+autorização.
+
+### 2. Titular autoriza — modo tela
+
+O chatbot (ou o app) abre a `links.redirect` no navegador. O titular se
+autentica, vê o que está sendo pedido e a validade, marca as contas e confirma:
+
+```
+GET /v1/data-sharing/consents/{consentId}/authorise
+```
+
+### 2b. Titular autoriza — modo texto
+
+Se o titular **já está logado no chatbot**, a autorização acontece na conversa,
+sem sair do chat. Primeiro o bot pergunta quais contas compartilhar:
+
+```bash
+curl http://localhost:3000/v1/data-sharing/consents/$CONSENT_ID/accounts \
+  -H "Authorization: Bearer $TOKEN_TITULAR"
+```
+
+E então autoriza com as escolhidas:
+
+```bash
+curl -X POST http://localhost:3000/v1/data-sharing/consents/$CONSENT_ID/authorise \
+  -H "Authorization: Bearer $TOKEN_TITULAR" -H 'Content-Type: application/json' \
+  -d '{ "accountIds": ["'"$ACCOUNT_ID"'"] }'
+```
+
+Os dois modos caem no mesmo serviço, com as mesmas validações e o mesmo
+resultado: quem autoriza tem que ser o titular endereçado no consentimento, e
+as contas têm que ser dele.
+
+### 3. Receptora lê saldo e extrato
+
+O consentimento viaja no header `x-consent-id` (no OFB ele vem no escopo do
+token); o JWT continua identificando a receptora:
+
+```bash
+curl http://localhost:3000/open-banking/accounts/v2/accounts \
+  -H "Authorization: Bearer $TOKEN_RECEPTORA" -H "x-consent-id: $CONSENT_ID"
+
+curl http://localhost:3000/open-banking/accounts/v2/accounts/$ACCOUNT_ID/balances \
+  -H "Authorization: Bearer $TOKEN_RECEPTORA" -H "x-consent-id: $CONSENT_ID"
+
+curl http://localhost:3000/open-banking/accounts/v2/accounts/$ACCOUNT_ID/transactions \
+  -H "Authorization: Bearer $TOKEN_RECEPTORA" -H "x-consent-id: $CONSENT_ID"
+```
+
+### 4. Titular acompanha e revoga
+
+```bash
+# O que concedi e o que recebi
+curl http://localhost:3000/v1/me/data-sharing/consents -H "Authorization: Bearer $TOKEN_TITULAR"
+
+# Revogar
+curl -X DELETE http://localhost:3000/v1/me/data-sharing/consents/$CONSENT_ID \
+  -H "Authorization: Bearer $TOKEN_TITULAR"
+```
+
+Depois da revogação, a próxima leitura da receptora já responde `403`.
+
 ## Endpoints
 
 Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x-initiator-key`; **—** = pública.
@@ -341,6 +439,23 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 | POST | `/open-banking/pisp/payments/v5/jsr/pix/payments` | INI | Inicia pagamento PIX JSR (sem redirect) |
 | GET | `/open-banking/pisp/payments/v5/jsr/pix/payments/{paymentId}` | INI | Consulta status do pagamento JSR |
 
+### Compartilhamento de dados (Open Finance)
+
+| Método | Endpoint | Auth | Descrição |
+|---|---|---|---|
+| POST | `/open-banking/consents/v3/consents` | JWT (receptora) | Cria consentimento de leitura (sem `expirationDateTime` = prazo indeterminado) |
+| GET | `/open-banking/consents/v3/consents/{consentId}` | JWT | Consulta o consentimento (receptora ou titular) |
+| DELETE | `/open-banking/consents/v3/consents/{consentId}` | JWT | Revoga ou recusa o consentimento |
+| GET | `/v1/data-sharing/consents/{consentId}/authorise` | — | Tela de autorização (HTML) |
+| POST | `/v1/data-sharing/consents/{consentId}/authorise` | JWT (titular) | Autoriza em modo texto, com `accountIds` |
+| GET | `/v1/data-sharing/consents/{consentId}/accounts` | JWT (titular) | Contas que o titular pode oferecer neste consentimento |
+| GET | `/v1/me/data-sharing/consents` | JWT | Consentimentos concedidos e recebidos |
+| DELETE | `/v1/me/data-sharing/consents/{consentId}` | JWT | Revoga um consentimento concedido |
+| GET | `/open-banking/accounts/v2/accounts` | JWT + `x-consent-id` | Contas dentro do consentimento |
+| GET | `/open-banking/accounts/v2/accounts/{accountId}` | JWT + `x-consent-id` | Identificação da conta compartilhada |
+| GET | `/open-banking/accounts/v2/accounts/{accountId}/balances` | JWT + `x-consent-id` | Saldo da conta compartilhada |
+| GET | `/open-banking/accounts/v2/accounts/{accountId}/transactions` | JWT + `x-consent-id` | Extrato da conta compartilhada |
+
 ## Modelo de dados (principais entidades)
 
 - **User** — credenciais de acesso (`username`, `passwordHash`)
@@ -354,6 +469,9 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 - **Enrollment** — vínculo de dispositivo ITP (status: CREATED → ACCOUNT_HOLDER_CONFIRMED → FIDO_REGISTERED)
 - **FidoCredential** — credencial FIDO do dispositivo
 - **AuthRequest** — fluxo OAuth simplificado (authorize → code → token)
+- **DataSharingConsent** — consentimento de compartilhamento de dados (permissões, validade opcional, status AWAITING_AUTHORISATION → AUTHORISED → REJECTED)
+- **DataSharingConsentAccount** — contas que o titular colocou no escopo do consentimento
+- **DataSharingAccess** — trilha de cada leitura feita pela receptora sob um consentimento
 
 ## Decisões relevantes
 
@@ -394,6 +512,29 @@ A assinatura **não é WebAuthn**: Iniciadora e Detentora são dois backends que
 compartilham um segredo, e é o mesmo segredo que já autentica a Iniciadora.
 Ela prova conhecimento do challenge e da credencial corretos, não a
 participação do dispositivo do titular.
+
+### Compartilhamento de dados: o consentimento é o porteiro
+
+Toda leitura feita pela receptora passa por uma única função, que só devolve
+dado se o consentimento estiver `AUTHORISED`, dentro da validade, com a
+permissão exigida pela rota e com a conta dentro do escopo marcado pelo
+titular. Uma conta fora do escopo responde `404`, não `403`: ela não deve nem
+existir aos olhos da receptora.
+
+A **expiração é aplicada na leitura**, não por job agendado: um consentimento
+vencido é gravado como `REJECTED`/`CONSENT_EXPIRED` na própria requisição que o
+encontrou, antes de qualquer resposta. Assim o dado para de fluir na hora certa
+mesmo sem agendador rodando.
+
+Não existem status `REVOKED` nem `EXPIRED`. Como no OFB, revogação e expiração
+levam a `REJECTED`, distinguidas por `rejection.reason.code`
+(`CUSTOMER_MANUALLY_REVOKED`, `CONSENT_EXPIRED`) — uma máquina de estados só,
+mais fácil de auditar.
+
+O consentimento nasce endereçado a um **documento**, e o vínculo com o usuário
+real (`granterUserId`) só é gravado na autorização. Quem autoriza precisa ser o
+dono daquele documento; caso contrário qualquer usuário logado poderia assumir
+um pedido feito para outra pessoa.
 
 ## Escopo
 
