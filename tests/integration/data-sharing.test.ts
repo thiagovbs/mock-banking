@@ -405,4 +405,175 @@ describe('Compartilhamento de dados', () => {
       expect(body.received).toHaveLength(0)
     })
   })
+
+  describe('consentId no path (para clientes que so mandam parametros no caminho)', () => {
+    const base = `/v1/data-sharing/consents/${CONSENT_ID}/data`
+
+    function read(url: string, headers: Record<string, string> = {}) {
+      return app.inject({
+        method: 'GET',
+        url,
+        headers: { authorization: `Bearer ${granteeToken}`, ...headers },
+      })
+    }
+
+    it('le o saldo sem o header x-consent-id', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(consentRow())
+      mock.account.findUnique.mockResolvedValue(accountRow())
+
+      const response = await read(`${base}/accounts/${ACCOUNT_ID}/balances`)
+
+      expect(response.statusCode).toBe(200)
+      expect(response.json().data.availableAmount.amount).toBe('1500.00')
+    })
+
+    it('lista as contas do consentimento', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(consentRow())
+      mock.account.findMany.mockResolvedValue([accountRow()])
+
+      const response = await read(`${base}/accounts`)
+
+      expect(response.statusCode).toBe(200)
+      expect(response.json().data[0].accountId).toBe(ACCOUNT_ID)
+    })
+
+    it('le o extrato', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(consentRow())
+      mock.transaction.findMany.mockResolvedValue([])
+
+      const response = await read(`${base}/accounts/${ACCOUNT_ID}/transactions`)
+
+      expect(response.statusCode).toBe(200)
+      expect(response.json().meta.totalRecords).toBe(0)
+    })
+
+    it('aplica as mesmas regras do consentimento', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(
+        consentRow({ permissions: ['ACCOUNTS_READ'] }),
+      )
+
+      const response = await read(`${base}/accounts/${ACCOUNT_ID}/balances`)
+
+      expect(response.statusCode).toBe(403)
+      expect(response.json().error).toBe('CONSENT_PERMISSION_MISSING')
+    })
+
+    it('aceita o urn no path', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(consentRow())
+      mock.account.findUnique.mockResolvedValue(accountRow())
+
+      const response = await read(
+        `/v1/data-sharing/consents/${encodeURIComponent(CONSENT_URN)}/data/accounts/${ACCOUNT_ID}/balances`,
+      )
+
+      expect(response.statusCode).toBe(200)
+    })
+  })
+
+  describe('redirect_uri: fecha o loop de quem iniciou a jornada', () => {
+    const CALLBACK = 'http://localhost:8000/consent-callback'
+
+    it('guarda o redirect_uri informado na criacao', async () => {
+      mock.dataSharingConsent.create.mockResolvedValue(
+        consentRow({ status: 'AWAITING_AUTHORISATION', redirectUri: CALLBACK }),
+      )
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/open-banking/consents/v3/consents',
+        headers: { authorization: `Bearer ${granteeToken}` },
+        payload: {
+          data: {
+            loggedUser: { document: { identification: '12345678901' } },
+            permissions: ['ACCOUNTS_READ'],
+          },
+          redirect_uri: CALLBACK,
+        },
+      })
+
+      expect(response.statusCode).toBe(201)
+      expect(mock.dataSharingConsent.create.mock.calls[0][0].data.redirectUri).toBe(CALLBACK)
+    })
+
+    it('recusa um redirect_uri que nao e URL', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/open-banking/consents/v3/consents',
+        headers: { authorization: `Bearer ${granteeToken}` },
+        payload: {
+          data: {
+            loggedUser: { document: { identification: '12345678901' } },
+            permissions: ['ACCOUNTS_READ'],
+          },
+          redirect_uri: 'nao-e-url',
+        },
+      })
+
+      expect(response.statusCode).toBe(400)
+      expect(mock.dataSharingConsent.create).not.toHaveBeenCalled()
+    })
+
+    it('redireciona com consentId e status apos autorizar na tela', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(
+        consentRow({ status: 'AWAITING_AUTHORISATION', granterUserId: null, accounts: [], redirectUri: CALLBACK }),
+      )
+      mock.dataSharingConsent.update.mockResolvedValue(consentRow())
+      mock.account.findMany.mockResolvedValue([accountRow()])
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/data-sharing/consents/${CONSENT_ID}/authorise/confirm`,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: `token=${granterToken}&accountIds=${ACCOUNT_ID}`,
+      })
+
+      expect(response.statusCode).toBe(302)
+      expect(response.headers.location).toBe(
+        `${CALLBACK}?consentId=${encodeURIComponent(CONSENT_URN)}&status=AUTHORISED`,
+      )
+    })
+
+    it('redireciona com status REJECTED quando o titular recusa', async () => {
+      // A rota vincula o titular (updateMany) antes de rejeitar, entao a
+      // releitura seguinte ja precisa enxergar o granterUserId gravado.
+      mock.dataSharingConsent.findUnique
+        .mockResolvedValueOnce(
+          consentRow({ status: 'AWAITING_AUTHORISATION', granterUserId: null, accounts: [], redirectUri: CALLBACK }),
+        )
+        .mockResolvedValue(
+          consentRow({ status: 'AWAITING_AUTHORISATION', accounts: [], redirectUri: CALLBACK }),
+        )
+      mock.dataSharingConsent.update.mockResolvedValue(
+        consentRow({ status: 'REJECTED', rejectReason: 'CUSTOMER_MANUALLY_REJECTED' }),
+      )
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/data-sharing/consents/${CONSENT_ID}/authorise/reject`,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: `token=${granterToken}`,
+      })
+
+      expect(response.statusCode).toBe(302)
+      expect(response.headers.location).toContain('status=REJECTED')
+    })
+
+    it('sem redirect_uri, continua terminando na pagina de conclusao', async () => {
+      mock.dataSharingConsent.findUnique.mockResolvedValue(
+        consentRow({ status: 'AWAITING_AUTHORISATION', granterUserId: null, accounts: [], redirectUri: null }),
+      )
+      mock.dataSharingConsent.update.mockResolvedValue(consentRow())
+      mock.account.findMany.mockResolvedValue([accountRow()])
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/data-sharing/consents/${CONSENT_ID}/authorise/confirm`,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: `token=${granterToken}&accountIds=${ACCOUNT_ID}`,
+      })
+
+      expect(response.statusCode).toBe(200)
+      expect(response.body).toContain('Compartilhamento autorizado')
+    })
+  })
 })

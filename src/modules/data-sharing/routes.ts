@@ -41,6 +41,10 @@ const createConsentSchema = z.object({
     // Ausente ou null = prazo indeterminado.
     expirationDateTime: z.string().trim().min(1).nullish(),
   }),
+  // Para onde devolver o navegador ao fim da tela de consentimento. Fecha o
+  // loop para quem iniciou a jornada (um chatbot, por exemplo), no mesmo
+  // formato do redirect_uri de /v1/auth/authorize.
+  redirect_uri: z.url().max(500).optional(),
 })
 
 const authoriseSchema = z.object({
@@ -126,6 +130,7 @@ async function loadConsentForPage(app: any, consentId: string) {
       granteeName: grantee?.name ?? 'Instituição receptora',
       permissions,
       expiresAt: consent.expiresAt ? new Date(consent.expiresAt) : null,
+      redirectUri: consent.redirectUri as string | null,
     },
   }
 }
@@ -146,6 +151,7 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
         loggedUserDocument: input.data.loggedUser.document.identification,
         permissions: input.data.permissions,
         expirationDateTime: input.data.expirationDateTime,
+        redirectUri: input.redirect_uri,
       },
     })
 
@@ -322,6 +328,9 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
       accountIds,
     })
 
+    const back = consentCallbackUrl(page.redirectUri, page.id, 'AUTHORISED')
+    if (back) return reply.redirect(back)
+
     return reply.type('text/html').send(resultStepHtml(page.granteeName, true))
   })
 
@@ -345,6 +354,9 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
       consentId: page.id,
       requester: { userId: granter.userId, customerId: granter.customerId },
     })
+
+    const back = consentCallbackUrl(page.redirectUri, page.id, 'REJECTED')
+    if (back) return reply.redirect(back)
 
     return reply.type('text/html').send(resultStepHtml(page.granteeName, false))
   })
@@ -378,24 +390,39 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
   })
 
   // ---------------------------------------------------------------------
-  // Accounts v2 — leitura feita pela receptora sob um consentimento.
-  // O consentId vai no header x-consent-id (no OFB ele viaja no escopo do
-  // token); o JWT continua identificando a receptora.
+  // Leitura feita pela receptora sob um consentimento.
+  //
+  // Dois enderecos para o mesmo handler:
+  //  - /open-banking/accounts/v2/... com o consentId no header x-consent-id,
+  //    que e a forma do OFB (la ele viaja no escopo do token);
+  //  - /v1/data-sharing/consents/{consentId}/data/... com o consentId no path,
+  //    para clientes que so conseguem mandar parametros no caminho -- caso das
+  //    tools MCP geradas a partir do OpenAPI.
+  // O JWT identifica a receptora nas duas formas.
   // ---------------------------------------------------------------------
 
-  function consentIdFromHeader(request: FastifyRequest): string {
+  function resolveConsentId(request: FastifyRequest): string {
+    const fromPath = (request.params as { consentId?: string } | undefined)?.consentId
+    if (typeof fromPath === 'string' && fromPath.trim()) {
+      return parseConsentId(fromPath)
+    }
+
     const header = request.headers['x-consent-id']
     if (typeof header !== 'string' || !header.trim()) {
-      throw new AppError(400, 'Missing x-consent-id header', 'CONSENT_ID_REQUIRED')
+      throw new AppError(
+        400,
+        'Consent id is required: send it in the x-consent-id header or in the path',
+        'CONSENT_ID_REQUIRED',
+      )
     }
     return parseConsentId(header)
   }
 
-  app.get('/open-banking/accounts/v2/accounts', { preHandler: app.authenticate }, async (request) => {
+  const listSharedAccounts = async (request: FastifyRequest) => {
     const user = request.user as JwtUser
     const consent = await requireActiveConsent({
       prisma: app.prisma,
-      consentId: consentIdFromHeader(request),
+      consentId: resolveConsentId(request),
       grantee: { customerId: user.customerId },
       permission: 'ACCOUNTS_READ',
     })
@@ -419,15 +446,15 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     }))
 
     return envelope(request, data, data.length)
-  })
+  }
 
-  app.get('/open-banking/accounts/v2/accounts/:accountId', { preHandler: app.authenticate }, async (request) => {
+  const getSharedAccount = async (request: FastifyRequest) => {
     const user = request.user as JwtUser
     const { accountId } = accountParams.parse(request.params)
 
     const consent = await requireActiveConsent({
       prisma: app.prisma,
-      consentId: consentIdFromHeader(request),
+      consentId: resolveConsentId(request),
       grantee: { customerId: user.customerId },
       permission: 'ACCOUNTS_READ',
       accountId,
@@ -447,15 +474,15 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
       subtype: 'INDIVIDUAL',
       currency: 'BRL',
     })
-  })
+  }
 
-  app.get('/open-banking/accounts/v2/accounts/:accountId/balances', { preHandler: app.authenticate }, async (request) => {
+  const getSharedBalances = async (request: FastifyRequest) => {
     const user = request.user as JwtUser
     const { accountId } = accountParams.parse(request.params)
 
     const consent = await requireActiveConsent({
       prisma: app.prisma,
-      consentId: consentIdFromHeader(request),
+      consentId: resolveConsentId(request),
       grantee: { customerId: user.customerId },
       permission: 'ACCOUNTS_BALANCES_READ',
       accountId,
@@ -472,15 +499,15 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
       automaticallyInvestedAmount: { amount: '0.00', currency: 'BRL' },
       updateDateTime: new Date().toISOString(),
     })
-  })
+  }
 
-  app.get('/open-banking/accounts/v2/accounts/:accountId/transactions', { preHandler: app.authenticate }, async (request) => {
+  const getSharedTransactions = async (request: FastifyRequest) => {
     const user = request.user as JwtUser
     const { accountId } = accountParams.parse(request.params)
 
     const consent = await requireActiveConsent({
       prisma: app.prisma,
-      consentId: consentIdFromHeader(request),
+      consentId: resolveConsentId(request),
       grantee: { customerId: user.customerId },
       permission: 'ACCOUNTS_TRANSACTIONS_READ',
       accountId,
@@ -505,7 +532,39 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     }))
 
     return envelope(request, data, data.length)
-  })
+  }
+
+  const authenticated = { preHandler: app.authenticate }
+  const SHARED_DATA_PREFIX = '/v1/data-sharing/consents/:consentId/data'
+
+  app.get('/open-banking/accounts/v2/accounts', authenticated, listSharedAccounts)
+  app.get(`${SHARED_DATA_PREFIX}/accounts`, authenticated, listSharedAccounts)
+
+  app.get('/open-banking/accounts/v2/accounts/:accountId', authenticated, getSharedAccount)
+  app.get(`${SHARED_DATA_PREFIX}/accounts/:accountId`, authenticated, getSharedAccount)
+
+  app.get('/open-banking/accounts/v2/accounts/:accountId/balances', authenticated, getSharedBalances)
+  app.get(`${SHARED_DATA_PREFIX}/accounts/:accountId/balances`, authenticated, getSharedBalances)
+
+  app.get('/open-banking/accounts/v2/accounts/:accountId/transactions', authenticated, getSharedTransactions)
+  app.get(`${SHARED_DATA_PREFIX}/accounts/:accountId/transactions`, authenticated, getSharedTransactions)
+
+}
+
+/**
+ * Monta a volta para quem iniciou a jornada, carregando o desfecho. O consentId
+ * vai no formato urn, o mesmo devolvido na criacao, para que o chamador case a
+ * resposta com o pedido que fez.
+ */
+function consentCallbackUrl(
+  redirectUri: string | null,
+  consentId: string,
+  status: 'AUTHORISED' | 'REJECTED',
+): string | null {
+  if (!redirectUri) return null
+  const separator = redirectUri.includes('?') ? '&' : '?'
+  const params = new URLSearchParams({ consentId: toConsentUrn(consentId), status })
+  return `${redirectUri}${separator}${params.toString()}`
 }
 
 /** Valida o token curto emitido na tela de login do consentimento. */

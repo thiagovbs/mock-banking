@@ -320,6 +320,12 @@ Sem `expirationDateTime` o consentimento é por prazo indeterminado. A resposta
 nasce em `AWAITING_AUTHORISATION` e traz, em `links.redirect`, a URL da tela de
 autorização.
 
+Envie também `redirect_uri` para fechar o loop de quem iniciou a jornada: ao fim
+da tela, o navegador é devolvido para `<redirect_uri>?consentId=...&status=AUTHORISED`
+(ou `REJECTED`), no mesmo desenho do `redirect_uri` de `/v1/auth/authorize`. Sem
+ele, a tela termina em uma página de conclusão e o desfecho é consultado pelo
+`GET` do consentimento.
+
 ### 2. Titular autoriza — modo tela
 
 O chatbot (ou o app) abre a `links.redirect` no navegador. O titular se
@@ -379,6 +385,37 @@ curl -X DELETE http://localhost:3000/v1/me/data-sharing/consents/$CONSENT_ID \
 ```
 
 Depois da revogação, a próxima leitura da receptora já responde `403`.
+
+### O mesmo dado, com o consentId no caminho
+
+Nem todo cliente controla headers — as tools MCP geradas a partir do OpenAPI, por
+exemplo, mandam só argumentos. Por isso as mesmas leituras existem com o
+`consentId` no caminho, sob `/v1/data-sharing/consents/{consentId}/data`:
+
+```bash
+curl http://localhost:3000/v1/data-sharing/consents/$CONSENT_ID/data/accounts/$ACCOUNT_ID/balances   -H "Authorization: Bearer $TOKEN_RECEPTORA"
+```
+
+Mesmo handler, mesmas regras de consentimento; muda só onde o `consentId` viaja.
+
+### A jornada não precisa acontecer de uma vez só
+
+Consentimento criado agora pode ser autorizado depois, em outra sessão e por
+outro canal. O pedido nasce endereçado a um **documento**, então o titular o
+encontra quando entrar, sem precisar de link nenhum:
+
+```bash
+# Titular: o que está pendente de autorização minha
+curl http://localhost:3000/v1/me/data-sharing/consents -H "Authorization: Bearer $TOKEN_TITULAR"
+# -> granted[] inclui os AWAITING_AUTHORISATION endereçados ao CPF dele
+
+# Receptora: acompanha o desfecho do pedido que fez
+curl http://localhost:3000/open-banking/consents/v3/consents/$CONSENT_ID   -H "Authorization: Bearer $TOKEN_RECEPTORA"
+```
+
+Isso permite montar a jornada como caixa de entrada — a receptora pede, o titular
+resolve quando quiser — em vez de exigir que os dois lados estejam na mesma
+conversa ao mesmo tempo.
 
 ## Endpoints
 
@@ -455,6 +492,10 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 | GET | `/open-banking/accounts/v2/accounts/{accountId}` | JWT + `x-consent-id` | Identificação da conta compartilhada |
 | GET | `/open-banking/accounts/v2/accounts/{accountId}/balances` | JWT + `x-consent-id` | Saldo da conta compartilhada |
 | GET | `/open-banking/accounts/v2/accounts/{accountId}/transactions` | JWT + `x-consent-id` | Extrato da conta compartilhada |
+| GET | `/v1/data-sharing/consents/{consentId}/data/accounts` | JWT (receptora) | Contas do consentimento, com o `consentId` no caminho |
+| GET | `/v1/data-sharing/consents/{consentId}/data/accounts/{accountId}` | JWT (receptora) | Identificação da conta compartilhada |
+| GET | `/v1/data-sharing/consents/{consentId}/data/accounts/{accountId}/balances` | JWT (receptora) | Saldo, com o `consentId` no caminho |
+| GET | `/v1/data-sharing/consents/{consentId}/data/accounts/{accountId}/transactions` | JWT (receptora) | Extrato, com o `consentId` no caminho |
 
 ## Modelo de dados (principais entidades)
 
@@ -469,7 +510,7 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 - **Enrollment** — vínculo de dispositivo ITP (status: CREATED → ACCOUNT_HOLDER_CONFIRMED → FIDO_REGISTERED)
 - **FidoCredential** — credencial FIDO do dispositivo
 - **AuthRequest** — fluxo OAuth simplificado (authorize → code → token)
-- **DataSharingConsent** — consentimento de compartilhamento de dados (permissões, validade opcional, status AWAITING_AUTHORISATION → AUTHORISED → REJECTED)
+- **DataSharingConsent** — consentimento de compartilhamento de dados (permissões, validade opcional, `redirectUri` opcional, status AWAITING_AUTHORISATION → AUTHORISED → REJECTED)
 - **DataSharingConsentAccount** — contas que o titular colocou no escopo do consentimento
 - **DataSharingAccess** — trilha de cada leitura feita pela receptora sob um consentimento
 
@@ -535,6 +576,17 @@ O consentimento nasce endereçado a um **documento**, e o vínculo com o usuári
 real (`granterUserId`) só é gravado na autorização. Quem autoriza precisa ser o
 dono daquele documento; caso contrário qualquer usuário logado poderia assumir
 um pedido feito para outra pessoa.
+
+Esse endereçamento por documento é o que torna a jornada **assíncrona**: o pedido
+existe antes de o titular aparecer, e ele o encontra em
+`GET /v1/me/data-sharing/consents` quando entrar, sem depender de ter recebido o
+link. Os dois lados não precisam estar na mesma sessão.
+
+O `consentId` é aceito em três lugares — header `x-consent-id` (forma do OFB),
+caminho da URL (`/v1/data-sharing/consents/{consentId}/data/...`) e, na
+autorização, no próprio path. É o mesmo handler nos três casos: quem só consegue
+mandar parâmetros no caminho, como uma tool MCP gerada do OpenAPI, não fica de
+fora.
 
 ## Escopo
 

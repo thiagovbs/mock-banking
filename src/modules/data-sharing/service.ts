@@ -180,6 +180,7 @@ export type CreateConsentParams = {
     loggedUserDocument: string
     permissions: string[]
     expirationDateTime?: string | null
+    redirectUri?: string
   }
 }
 
@@ -215,6 +216,7 @@ export async function createDataSharingConsent(params: CreateConsentParams): Pro
       granterDocument,
       permissions,
       expiresAt,
+      redirectUri: input.redirectUri,
       status: 'AWAITING_AUTHORISATION',
       statusUpdatedAt: new Date(),
     },

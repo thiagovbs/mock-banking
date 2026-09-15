@@ -330,6 +330,10 @@ model DataSharingConsent {
   granterUserId     String?
   granterCustomerId String?
   permissions       Json
+  // Para onde devolver o navegador depois da tela de consentimento. Fecha o
+  // loop da jornada por redirect, como o redirectUri do AuthRequest faz no
+  // login. Nulo = a tela termina em uma pagina de conclusao.
+  redirectUri       String?                   @db.VarChar(500)
   status            DataSharingConsentStatus  @default(AWAITING_AUTHORISATION)
   // Nulo = prazo indeterminado.
   expiresAt         DateTime?
