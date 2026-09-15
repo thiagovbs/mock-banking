@@ -11,4 +11,3 @@ coverage
 vitest.config.ts
 docker-compose.yml
 Dockerfile
-render.yaml
