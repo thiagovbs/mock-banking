@@ -12,6 +12,7 @@ import {
   createJsConsent,
   getEnrollment,
   getJsPaymentStatus,
+  revokeEnrollment,
   initiateJsPayment,
   listAccountDevices,
   registerFidoCredential,
@@ -44,7 +45,10 @@ const fidoRegistrationSchema = z.object({
 })
 
 const jsConsentSchema = z.object({
-  accountId: z.string().uuid(),
+  enrollmentId: z.string().uuid(),
+  // Opcional e apenas conferido contra a conta do enrollment; nao e ele que
+  // define qual conta sera debitada.
+  accountId: z.string().uuid().optional(),
   amount: z.union([z.string(), z.number()]),
   description: z.string().max(200).optional(),
   creditor: z.object({
@@ -68,7 +72,8 @@ const jsConsentSchema = z.object({
 
 const authoriseSchema = z.object({
   credentialId: z.string().min(1),
-  challenge: z.string().optional(),
+  challenge: z.string().min(1),
+  signature: z.string().min(1),
 })
 
 const initiatePaymentSchema = z.object({
@@ -139,11 +144,16 @@ const jsrRoutes: FastifyPluginAsync = async (app) => {
 
       const { location } = await accountHolderConfirmed(app.prisma, enrollmentId, {
         userId: user.id,
-        debtorAccountNumber: input.data.debtorAccount.number,
+        accountId: account.id,
       })
       return reply.header('location', location).code(200).send({})
     },
   )
+
+  app.delete('/open-banking/itp/v2/enrollments/:enrollmentId', { preHandler: app.requireInitiator }, async (request) => {
+    const { enrollmentId } = enrollmentParams.parse(request.params)
+    return revokeEnrollment(app.prisma, enrollmentId)
+  })
 
   app.post('/open-banking/itp/v2/enrollments/confirmations', { preHandler: app.requireInitiator }, async (request) => {
     const input = confirmEnrollmentSchema.parse(request.body)
@@ -163,36 +173,30 @@ const jsrRoutes: FastifyPluginAsync = async (app) => {
   app.post('/open-banking/pisp/payments/v5/jsr/consents', { preHandler: app.requireInitiator }, async (request, reply) => {
     const input = jsConsentSchema.parse(request.body)
     const amount = parseMoney(input.payment.amount ?? input.amount)
-    const account = await app.prisma.account.findFirst({
-      where: { id: input.accountId },
-      include: { customer: true },
-    })
-    if (!account) throw new AppError(404, 'Account not found', 'ACCOUNT_NOT_FOUND')
-
     const proxy = input.payment.details.proxy
-    const keyType = inferPixKeyType(proxy)
 
-    const { consentId, fidoChallenge } = await createJsConsent(app.prisma, {
-      accountId: input.accountId,
-      userId: account.customer.userId,
-      customerId: account.customer.id,
+    // Conta e titular derivam do enrollment, dentro de createJsConsent.
+    const { consentId, fidoChallenge, accountId } = await createJsConsent(app.prisma, {
+      enrollmentId: input.enrollmentId,
+      expectedAccountId: input.accountId,
       amount,
       creditorName: input.creditor.name,
       creditorDocument: input.creditor.cpfCnpj,
-      creditorKey: { type: keyType, value: proxy },
+      creditorKey: { type: inferPixKeyType(proxy), value: proxy },
       description: input.description,
     })
 
     return reply
       .header('x-pisp-consent-id', consentId)
       .code(201)
-      .send({ consentId, fidoChallenge })
+      .send({ consentId, fidoChallenge, accountId })
   })
 
   app.post('/open-banking/itp/v2/consents/:consentId/authorise', { preHandler: app.requireInitiator }, async (request) => {
     const { consentId } = consentParams.parse(request.params)
     const input = authoriseSchema.parse(request.body)
-    await authoriseJsConsent(app.prisma, consentId, input)
+    const secret = process.env.INITIATOR_SERVICE_SECRET ?? ''
+    await authoriseJsConsent(app.prisma, secret, consentId, input)
     return { status: 'AUTHORISED' }
   })
 

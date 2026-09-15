@@ -48,6 +48,18 @@ export async function settlePaymentConsent(
     throw new AppError(409, 'Consent is not authorized', 'CONSENT_NOT_AUTHORISED')
   }
 
+  // Consentimento JSR: o dispositivo precisa continuar ativo agora, e nao
+  // apenas quando o consentimento foi criado. A checagem e feita aqui, e nao
+  // importada de jsr/service, para nao criar ciclo entre os dois modulos.
+  if (consent.enrollmentId) {
+    const enrollment = await prisma.enrollment.findUnique({
+      where: { id: consent.enrollmentId },
+    })
+    if (!enrollment || enrollment.revokedAt || enrollment.status !== 'FIDO_REGISTERED') {
+      throw new AppError(409, 'Enrollment is no longer active', 'ENROLLMENT_REVOKED')
+    }
+  }
+
   let paymentId = consent.paymentId
 
   if (consent.status === 'AUTHORISED') {

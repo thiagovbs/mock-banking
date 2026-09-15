@@ -132,6 +132,7 @@ GET    /v1/aspsp/payments/{consentId}
 x-initiator-key (JSR)
 POST   /open-banking/itp/v2/enrollments
 GET    /open-banking/itp/v2/enrollments/{enrollmentId}
+DELETE /open-banking/itp/v2/enrollments/{enrollmentId}
 GET    /open-banking/itp/v2/accounts/{accountNumber}/enrollments
 PATCH  /open-banking/enrollment-supports/v2/enrollment-supports/{enrollmentId}/account-holder-confirmed
 POST   /open-banking/itp/v2/enrollments/confirmations

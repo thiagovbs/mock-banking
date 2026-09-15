@@ -92,6 +92,7 @@ model Account {
   pixTransfersReceived PixTransfer[] @relation("PixTransferDestination")
   paymentConsents      PaymentConsent[]
   paymentRequests      PaymentRequest[]
+  enrollments          Enrollment[]
 }
 
 model Transaction {
@@ -206,6 +207,10 @@ model PaymentConsent {
   paymentId          String?              @unique
   authorisationFlow  String?
   fidoChallenge      String?
+  // Jornada JSR: o consentimento nasce preso a um enrollment, e registra qual
+  // credencial de fato o autorizou.
+  enrollmentId       String?
+  fidoCredentialId   String?
   createdAt          DateTime             @default(now())
   authorisedAt       DateTime?
   submittedAt        DateTime?
@@ -227,15 +232,23 @@ enum EnrollmentStatus {
 model Enrollment {
   id          String           @id @default(uuid())
   userId      String?
+  // Conta fixada no account-holder-confirmed. Todo consentimento JSR deriva
+  // dela, em vez de aceitar accountId pelo corpo da requisicao.
+  accountId   String?
   status      EnrollmentStatus @default(CREATED)
   requestId   String?          @unique
   code        String?          @unique
   redirectUri String
   challenge   String
   used        Boolean          @default(false)
+  // Dispositivo ativo = FIDO_REGISTERED e revokedAt nulo.
+  revokedAt   DateTime?
   createdAt   DateTime         @default(now())
 
+  account Account? @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
   @@index([userId, createdAt])
+  @@index([accountId, createdAt])
 }
 
 model FidoCredential {

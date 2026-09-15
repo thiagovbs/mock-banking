@@ -252,7 +252,7 @@ curl -X POST http://localhost:3000/open-banking/itp/v2/enrollments/<enrollmentId
 curl -X POST http://localhost:3000/open-banking/pisp/payments/v5/jsr/consents \
   -H 'x-initiator-key: <INITIATOR_SERVICE_SECRET>' -H 'Content-Type: application/json' \
   -d '{
-    "accountId": "<UUID_DA_CONTA>",
+    "enrollmentId": "<enrollmentId>",
     "amount": "25.00",
     "creditor": { "cpfCnpj": "01688166360", "name": "Beneficiario" },
     "payment": { "amount": "25.00", "details": { "proxy": "01688166360", "localInstrument": "DICT" } }
@@ -260,8 +260,16 @@ curl -X POST http://localhost:3000/open-banking/pisp/payments/v5/jsr/consents \
 
 curl -X POST http://localhost:3000/open-banking/itp/v2/consents/<consentId>/authorise \
   -H 'x-initiator-key: <INITIATOR_SERVICE_SECRET>' -H 'Content-Type: application/json' \
-  -d '{ "credentialId": "credential-xpto", "challenge": "<fidoChallenge>" }'
+  -d '{
+    "credentialId": "credential-xpto",
+    "challenge": "<fidoChallenge>",
+    "signature": "<assinatura>"
+  }'
 ```
+
+A `signature` e um HMAC-SHA256 sobre
+`jsr-fido-assertion|<consentId>|<credentialId>|<challenge>`, tendo o
+`INITIATOR_SERVICE_SECRET` como chave. Os tres campos sao obrigatorios.
 
 ### 5. Iniciar e consultar o pagamento JSR
 
@@ -324,11 +332,12 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 |---|---|---|---|
 | POST | `/open-banking/itp/v2/enrollments` | INI | Cria enrollment ITP (vinculação de dispositivo) |
 | GET | `/open-banking/itp/v2/enrollments/{enrollmentId}` | INI | Consulta status do enrollment |
+| DELETE | `/open-banking/itp/v2/enrollments/{enrollmentId}` | INI | Revoga o dispositivo vinculado |
 | PATCH | `/open-banking/enrollment-supports/v2/enrollment-supports/{enrollmentId}/account-holder-confirmed` | INI | Confirma titular e gera `code`+`state` |
 | POST | `/open-banking/itp/v2/enrollments/confirmations` | INI | Confirma enrollment com `authorizationCode` |
 | POST | `/open-banking/itp/v2/enrollments/{enrollmentId}/fido-registration` | INI | Registra credencial FIDO do dispositivo |
-| POST | `/open-banking/pisp/payments/v5/jsr/consents` | INI | Cria consentimento de pagamento JSR |
-| POST | `/open-banking/itp/v2/consents/{consentId}/authorise` | INI | Autoriza consentimento com credencial FIDO |
+| POST | `/open-banking/pisp/payments/v5/jsr/consents` | INI | Cria consentimento JSR a partir de um `enrollmentId` |
+| POST | `/open-banking/itp/v2/consents/{consentId}/authorise` | INI | Autoriza com credencial FIDO, challenge e assinatura |
 | POST | `/open-banking/pisp/payments/v5/jsr/pix/payments` | INI | Inicia pagamento PIX JSR (sem redirect) |
 | GET | `/open-banking/pisp/payments/v5/jsr/pix/payments/{paymentId}` | INI | Consulta status do pagamento JSR |
 
@@ -372,6 +381,19 @@ Não há rota de crédito direto. Todo aumento de saldo ocorre por recebimento d
 ### Segurança das rotas JSR
 
 As rotas `/open-banking/*` (ITP/PISP JSR) não usam JWT de usuário — são autenticadas pela **Iniciadora** via header `x-initiator-key`, validado contra `INITIATOR_SERVICE_SECRET`.
+
+O **enrollment é a âncora da jornada**. Titular e conta são fixados nele no
+`account-holder-confirmed` e, daí em diante, o consentimento deriva do
+enrollment — o `accountId` no corpo é apenas conferido, e divergência é
+recusada com `400`. Autorizar exige a credencial daquele enrollment
+específico, o challenge do consentimento (de uso único, limpo ao autorizar) e
+uma assinatura HMAC que amarra os três. O dispositivo é revalidado no momento
+do débito, então revogar impede pagamentos autorizados antes.
+
+A assinatura **não é WebAuthn**: Iniciadora e Detentora são dois backends que
+compartilham um segredo, e é o mesmo segredo que já autentica a Iniciadora.
+Ela prova conhecimento do challenge e da credencial corretos, não a
+participação do dispositivo do titular.
 
 ## Escopo
 
