@@ -93,6 +93,7 @@ model Account {
   paymentConsents      PaymentConsent[]
   paymentRequests      PaymentRequest[]
   enrollments          Enrollment[]
+  sharedInConsents     DataSharingConsentAccount[]
 }
 
 model Transaction {
@@ -287,4 +288,88 @@ model PaymentRequest {
   pixKey  PixKey  @relation(fields: [pixKeyId], references: [id], onDelete: Restrict)
 
   @@index([accountId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Compartilhamento de dados (jornada AISP do Open Finance)
+//
+// Uma conta (receptora) pede ao titular de outra conta permissao para ler
+// saldo e extrato. O titular autoriza escolhendo quais das suas contas entram
+// no consentimento. Os status seguem o padrao OFB: nao existe REVOKED nem
+// EXPIRED -- ambos sao REJECTED com um motivo, o que mantem uma unica maquina
+// de estados.
+// ---------------------------------------------------------------------------
+
+enum DataSharingConsentStatus {
+  AWAITING_AUTHORISATION
+  AUTHORISED
+  REJECTED
+}
+
+enum DataSharingRejectedBy {
+  USER
+  ASPSP
+  TPP
+}
+
+enum DataSharingRejectReason {
+  CUSTOMER_MANUALLY_REJECTED
+  CUSTOMER_MANUALLY_REVOKED
+  CONSENT_EXPIRED
+}
+
+model DataSharingConsent {
+  id                String                    @id @default(uuid())
+  // Receptora: quem passa a enxergar os dados.
+  granteeUserId     String
+  granteeCustomerId String
+  // Titular dos dados. Na criacao a receptora so informa o documento
+  // (loggedUser.document.identification); o vinculo com o usuario real so e
+  // fixado quando ele autoriza.
+  granterDocument   String                    @db.VarChar(191)
+  granterUserId     String?
+  granterCustomerId String?
+  permissions       Json
+  status            DataSharingConsentStatus  @default(AWAITING_AUTHORISATION)
+  // Nulo = prazo indeterminado.
+  expiresAt         DateTime?
+  rejectedBy        DataSharingRejectedBy?
+  rejectReason      DataSharingRejectReason?
+  createdAt         DateTime                  @default(now())
+  statusUpdatedAt   DateTime                  @default(now())
+  authorisedAt      DateTime?
+  rejectedAt        DateTime?
+
+  accounts DataSharingConsentAccount[]
+  accesses DataSharingAccess[]
+
+  @@index([granteeCustomerId, createdAt])
+  @@index([granterUserId, createdAt])
+  @@index([granterDocument, createdAt])
+}
+
+model DataSharingConsentAccount {
+  id        String   @id @default(uuid())
+  consentId String
+  accountId String
+  createdAt DateTime @default(now())
+
+  consent DataSharingConsent @relation(fields: [consentId], references: [id], onDelete: Cascade)
+  account Account            @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@unique([consentId, accountId])
+  @@index([accountId])
+}
+
+// Trilha de acesso: cada leitura feita pela receptora sob um consentimento.
+model DataSharingAccess {
+  id        String   @id @default(uuid())
+  consentId String
+  accountId String?
+  resource  String   @db.VarChar(60)
+  createdAt DateTime @default(now())
+
+  consent DataSharingConsent @relation(fields: [consentId], references: [id], onDelete: Cascade)
+
+  @@index([consentId, createdAt])
 }

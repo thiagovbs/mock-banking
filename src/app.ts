@@ -14,6 +14,7 @@ import   pixRoutes  from './modules/pix/routes.js'
 import aspspRoutes from './modules/aspsp/routes.js'
 import jsrRoutes from './modules/jsr/routes.js'
 import qrCodeRoutes from './modules/qrcode/routes.js'
+import dataSharingRoutes from './modules/data-sharing/routes.js'
 
 export async function buildApp() {
   const app = Fastify({ logger: true })
@@ -30,9 +31,18 @@ export async function buildApp() {
     const contentType = _req.headers['content-type'] || ''
     if (contentType.includes('application/x-www-form-urlencoded')) {
       const params = new URLSearchParams(raw)
-      const obj: Record<string, string> = {}
+      // Chaves repetidas viram array (ex.: varias checkboxes `accountIds` na
+      // tela de consentimento); mantendo string quando aparecem uma so vez.
+      const obj: Record<string, string | string[]> = {}
       for (const [key, value] of params.entries()) {
-        obj[key] = value
+        const existing = obj[key]
+        if (existing === undefined) {
+          obj[key] = value
+        } else if (Array.isArray(existing)) {
+          existing.push(value)
+        } else {
+          obj[key] = [existing, value]
+        }
       }
       return done(null, obj)
     }
@@ -108,6 +118,7 @@ export async function buildApp() {
   await app.register(aspspRoutes)
   await app.register(jsrRoutes)
   await app.register(qrCodeRoutes)
+  await app.register(dataSharingRoutes)
 
 
   return app

@@ -29,6 +29,9 @@ const MODEL_NAMES = [
   'enrollment',
   'fidoCredential',
   'authRequest',
+  'dataSharingConsent',
+  'dataSharingConsentAccount',
+  'dataSharingAccess',
 ] as const
 
 type ModelName = (typeof MODEL_NAMES)[number]
