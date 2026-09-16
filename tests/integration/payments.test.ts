@@ -57,6 +57,100 @@ describe('POST /v1/me/payments (facade)', () => {
   }
 
   describe('PIX payment method', () => {
+    // O contrato publicado exige enrollmentId em PIX -- e so em PIX.
+    function arrangeSourceAccount() {
+      mock.account.findFirst.mockResolvedValue({
+        id: 'acc-source',
+        customerId: 'cust-1',
+        status: 'ACTIVE',
+        balance: decimal('500.00'),
+      })
+    }
+
+    function payWithDevice(enrollmentId = 'device-1') {
+      return pay({
+        paymentMethod: 'PIX',
+        amount: '100.00',
+        enrollmentId,
+        pix: { key: 'destino@example.com' },
+      })
+    }
+
+    it('recusa dispositivo inexistente', async () => {
+      arrangeSourceAccount()
+      mock.enrollment.findUnique.mockResolvedValue(null)
+
+      const response = await payWithDevice()
+
+      expect(response.statusCode).toBe(404)
+      expect(response.json().error).toBe('ENROLLMENT_NOT_FOUND')
+      expect(mock.pixTransfer.create).not.toHaveBeenCalled()
+    })
+
+    it('esconde dispositivo de outro titular como inexistente', async () => {
+      arrangeSourceAccount()
+      mock.enrollment.findUnique.mockResolvedValue({
+        id: 'device-1',
+        userId: 'outro-usuario',
+        status: 'FIDO_REGISTERED',
+        revokedAt: null,
+      })
+
+      const response = await payWithDevice()
+
+      expect(response.statusCode).toBe(404)
+      expect(response.json().error).toBe('ENROLLMENT_NOT_FOUND')
+    })
+
+    it('recusa dispositivo revogado', async () => {
+      arrangeSourceAccount()
+      mock.enrollment.findUnique.mockResolvedValue({
+        id: 'device-1',
+        userId: USER.sub,
+        status: 'FIDO_REGISTERED',
+        revokedAt: new Date(),
+      })
+
+      const response = await payWithDevice()
+
+      expect(response.statusCode).toBe(409)
+      expect(response.json().error).toBe('ENROLLMENT_REVOKED')
+    })
+
+    it('recusa dispositivo que nao concluiu o registro FIDO', async () => {
+      arrangeSourceAccount()
+      mock.enrollment.findUnique.mockResolvedValue({
+        id: 'device-1',
+        userId: USER.sub,
+        status: 'CREATED',
+        revokedAt: null,
+      })
+
+      const response = await payWithDevice()
+
+      expect(response.statusCode).toBe(409)
+      expect(response.json().error).toBe('ENROLLMENT_NOT_REGISTERED')
+    })
+
+    it('recusa PIX sem enrollmentId', async () => {
+      mock.account.findFirst.mockResolvedValue({
+        id: 'acc-source',
+        customerId: 'cust-1',
+        status: 'ACTIVE',
+        balance: decimal('500.00'),
+      })
+
+      const response = await pay({
+        paymentMethod: 'PIX',
+        amount: '100.00',
+        pix: { key: 'destino@example.com' },
+      })
+
+      expect(response.statusCode).toBe(400)
+      expect(response.json().error).toBe('PAYMENT_DATA_REQUIRED')
+      expect(mock.pixTransfer.create).not.toHaveBeenCalled()
+    })
+
     function arrangePixTransfer() {
       // Facade looks up the first active account, then the service re-validates
       // ownership of that same account. Both return the source account.
@@ -74,6 +168,12 @@ describe('POST /v1/me/payments (facade)', () => {
         status: 'ACTIVE',
       })
       mock.pixTransfer.findUnique.mockResolvedValue(null)
+      mock.enrollment.findUnique.mockResolvedValue({
+        id: 'device-1',
+        userId: USER.sub,
+        status: 'FIDO_REGISTERED',
+        revokedAt: null,
+      })
 
       mock.$queryRaw.mockResolvedValue([
         { id: 'acc-source', customerId: 'cust-1', status: 'ACTIVE', balance: decimal('500.00') },
@@ -110,6 +210,7 @@ describe('POST /v1/me/payments (facade)', () => {
 
       const response = await pay({
         paymentMethod: 'PIX',
+        enrollmentId: 'device-1',
         amount: '100.00',
         pix: { key: 'destino@example.com' },
       })
@@ -129,6 +230,7 @@ describe('POST /v1/me/payments (facade)', () => {
 
       await pay({
         paymentMethod: 'PIX',
+        enrollmentId: 'device-1',
         amount: '100.00',
         pix: { key: 'destino@example.com' },
       })
@@ -157,6 +259,7 @@ describe('POST /v1/me/payments (facade)', () => {
 
       const body = (await pay({
         paymentMethod: 'PIX',
+        enrollmentId: 'device-1',
         amount: '100.00',
         pix: { key: 'destino@example.com' },
       })).json()

@@ -10,6 +10,9 @@ import { executePixTransfer, inferPixKeyType } from '../pix/service.js'
 const paymentSchema = z.object({
   paymentMethod: z.enum(['PIX', 'QR_CODE', 'BOLETO', 'BILL']),
   amount: z.union([z.string(), z.number()]),
+  // Obrigatorio em PIX, conforme o contrato publicado. A exigencia fica no
+  // handler, e nao aqui, porque depende do paymentMethod: QR_CODE, BOLETO e
+  // BILL nao pedem dispositivo.
   enrollmentId: z.string().trim().min(1).max(255).optional(),
   description: z.string().trim().max(200).optional(),
 
@@ -65,6 +68,35 @@ function serializePayment(payment: Payment) {
   }
 }
 
+/**
+ * Dispositivo apto a pagar pela fachada: existe, e do pagador, esta registrado
+ * e nao foi revogado -- a mesma definicao de "active" que a listagem de
+ * dispositivos usa.
+ *
+ * Nao reaproveita requireActiveEnrollment do modulo JSR porque aquela exige
+ * tambem conta fixada no enrollment, o que so faz sentido na jornada sem
+ * redirect: aqui a conta de origem e resolvida pela propria fachada.
+ */
+async function requireActiveDevice(
+  prisma: any,
+  enrollmentId: string,
+  userId: string,
+): Promise<void> {
+  const enrollment = await prisma.enrollment.findUnique({ where: { id: enrollmentId } })
+
+  // Dispositivo de outro titular responde como inexistente, para nao confirmar
+  // a existencia de enrollments alheios.
+  if (!enrollment || enrollment.userId !== userId) {
+    throw new AppError(404, 'Enrollment not found', 'ENROLLMENT_NOT_FOUND')
+  }
+  if (enrollment.revokedAt) {
+    throw new AppError(409, 'Enrollment is revoked', 'ENROLLMENT_REVOKED')
+  }
+  if (enrollment.status !== 'FIDO_REGISTERED') {
+    throw new AppError(409, 'Enrollment has no registered device', 'ENROLLMENT_NOT_REGISTERED')
+  }
+}
+
 const paymentRoutes: FastifyPluginAsync = async (app) => {
   app.post('/v1/me/payments', { preHandler: app.authenticate }, async (request, reply) => {
     const user = request.user as JwtUser
@@ -116,6 +148,17 @@ const paymentRoutes: FastifyPluginAsync = async (app) => {
             : 'qrCode.pixKey is required for QR_CODE payments',
           'PAYMENT_DATA_REQUIRED'
         )
+      }
+
+      if (input.paymentMethod === 'PIX') {
+        if (!input.enrollmentId) {
+          throw new AppError(
+            400,
+            'enrollmentId is required for PIX payments',
+            'PAYMENT_DATA_REQUIRED',
+          )
+        }
+        await requireActiveDevice(app.prisma, input.enrollmentId, user.sub)
       }
 
       const keyType = inferPixKeyType(pixKey)

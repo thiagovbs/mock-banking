@@ -197,12 +197,22 @@ curl -X POST http://localhost:3000/v1/me/payments \
   -d '{
     "paymentMethod": "PIX",
     "amount": "150.50",
+    "enrollmentId": "<enrollmentId de um dispositivo ativo>",
     "pix": { "key": "destino@email.com" },
     "description": "Pagamento de servico"
   }'
 ```
 
 Suporta `paymentMethod`: `PIX`, `QR_CODE`, `BOLETO`, `BILL`.
+
+`enrollmentId` é **obrigatório em PIX** — e só nele. O identificador sai da
+lista de dispositivos da conta
+(`GET /open-banking/itp/v2/accounts/{accountNumber}/enrollments`), tomando um
+que esteja `active`. QR_CODE, BOLETO e BILL não pedem dispositivo.
+
+O dispositivo é validado no pagamento: precisa existir, ser do pagador, estar
+`FIDO_REGISTERED` e não revogado. Um dispositivo de outro titular responde
+`404`, igual a um inexistente, para não confirmar que ele existe.
 
 ## Jornada JSR (Open Finance)
 
