@@ -4,6 +4,10 @@ import { AppError } from '../../shared/errors.js'
 
 export type PixKeyType = 'CPF' | 'CNPJ' | 'EMAIL' | 'PHONE' | 'EVP'
 
+function onlyDigits(document: string): string {
+  return document.replace(/\D/g, '')
+}
+
 export type ExecutePixTransferParams = {
   prisma: PrismaClient
   sourceAccountId: string
@@ -14,6 +18,12 @@ export type ExecutePixTransferParams = {
     consentId: string
     enrollmentId?: string
     description?: string
+    /**
+     * Documento que o iniciador declarou como sendo do recebedor. Quando vem
+     * preenchido, e conferido contra o titular real da chave: a chave resolve
+     * a conta, este campo prova que ela e de quem se esperava.
+     */
+    expectedCreditorDocument?: string
   }
 }
 
@@ -133,6 +143,25 @@ export async function executePixTransfer(params: ExecutePixTransferParams): Prom
     },
   })
   if (!destinationKey) throw new AppError(404, 'PIX key not found', 'PIX_KEY_NOT_FOUND')
+
+  if (input.expectedCreditorDocument) {
+    const declared = onlyDigits(input.expectedCreditorDocument)
+    const destinationAccount = await prisma.account.findUnique({
+      where: { id: destinationKey.accountId },
+      include: { customer: true },
+    })
+    const actual = onlyDigits(destinationAccount?.customer?.document ?? '')
+
+    // Protege contra a chave ter mudado de dono entre a hora em que o
+    // recebedor foi exibido ao pagador e a liquidacao.
+    if (!actual || actual !== declared) {
+      throw new AppError(
+        422,
+        'PIX key does not belong to the declared creditor',
+        'CREDITOR_MISMATCH',
+      )
+    }
+  }
 
   if (destinationKey.accountId === sourceAccountId) {
     throw new AppError(409, 'Source and destination accounts must be different', 'SAME_ACCOUNT_PIX_TRANSFER')

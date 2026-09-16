@@ -548,6 +548,20 @@ Transferências PIX e pagamentos bloqueiam as linhas das contas com MySQL `SELEC
   devolve o pagamento já registrado, com `200` e `idempotentReplay: true`, sem
   novo débito. Sem o header, cada chamada é uma operação nova.
 
+### Recebedor declarado x dono da chave
+
+A chave PIX resolve a conta de destino. Quando o consentimento declara o
+documento do recebedor (`creditor.cpfCnpj` na jornada JSR, `creditorDocument`
+no ASPSP), a liquidação confere esse documento contra o titular real da chave e
+recusa com `422 CREDITOR_MISMATCH` se divergir — nada de dinheiro se move.
+
+É a proteção contra a chave ter mudado de dono entre o momento em que o
+recebedor foi exibido ao pagador e a liquidação. O nome (`creditor.name`) não
+entra na conferência: texto livre geraria recusa por diferença de grafia. Ele
+segue apenas como descrição do lançamento quando o pagador não informa uma.
+
+Sem documento declarado, não há o que conferir e a liquidação segue pela chave.
+
 ### PIX como única origem de crédito
 
 Não há rota de crédito direto. Todo aumento de saldo ocorre por recebimento de PIX (transferência de outra conta interna), reforçando segregação de origens de fundos.

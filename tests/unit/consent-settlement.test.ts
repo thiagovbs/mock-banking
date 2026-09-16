@@ -68,6 +68,67 @@ describe('settlePaymentConsent', () => {
     mock = createMockPrisma()
   })
 
+  describe('documento declarado do recebedor', () => {
+    /** Titular real da chave de destino. */
+    function arrangeDestinationHolder(document: string) {
+      mock.account.findUnique.mockResolvedValue({
+        id: 'acc-dest',
+        customer: { id: 'cust-2', document },
+      })
+    }
+
+    it('liquida quando o documento declarado e o do dono da chave', async () => {
+      mock.paymentConsent.findUnique.mockResolvedValue(
+        consentRow({ creditorDocument: '987.654.321-00' }),
+      )
+      arrangeTransfer()
+      // Mascara no consentimento, digitos no cadastro: a comparacao normaliza.
+      arrangeDestinationHolder('98765432100')
+
+      const result = await settlePaymentConsent(mock as never, CONSENT_ID)
+
+      expect(result.endToEndId).toBeTruthy()
+    })
+
+    it('recusa quando a chave e de outro titular', async () => {
+      mock.paymentConsent.findUnique.mockResolvedValue(
+        consentRow({ creditorDocument: '11111111111' }),
+      )
+      arrangeTransfer()
+      arrangeDestinationHolder('98765432100')
+
+      await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toMatchObject({
+        statusCode: 422,
+        code: 'CREDITOR_MISMATCH',
+      })
+      // Nada de dinheiro se move quando o recebedor nao confere.
+      expect(mock.pixTransfer.create).not.toHaveBeenCalled()
+      expect(mock.transaction.create).not.toHaveBeenCalled()
+    })
+
+    it('recusa quando a conta de destino nao tem titular identificavel', async () => {
+      mock.paymentConsent.findUnique.mockResolvedValue(
+        consentRow({ creditorDocument: '98765432100' }),
+      )
+      arrangeTransfer()
+      mock.account.findUnique.mockResolvedValue(null)
+
+      await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toMatchObject({
+        code: 'CREDITOR_MISMATCH',
+      })
+    })
+
+    it('segue sem conferencia quando nenhum documento foi declarado', async () => {
+      mock.paymentConsent.findUnique.mockResolvedValue(consentRow({ creditorDocument: null }))
+      arrangeTransfer()
+
+      const result = await settlePaymentConsent(mock as never, CONSENT_ID)
+
+      expect(result.endToEndId).toBeTruthy()
+      expect(mock.account.findUnique).not.toHaveBeenCalled()
+    })
+  })
+
   it('settles an authorised consent', async () => {
     mock.paymentConsent.findUnique.mockResolvedValue(consentRow())
     arrangeTransfer()

@@ -88,6 +88,7 @@ export async function settlePaymentConsent(
       pixKey: { type: consent.creditorKeyType, value: consent.creditorKeyValue },
       consentId: consent.id,
       description: consent.description ?? `PIX to ${consent.creditorName}`,
+      expectedCreditorDocument: consent.creditorDocument ?? undefined,
     },
   })
 
