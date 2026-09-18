@@ -207,7 +207,7 @@ const jsrRoutes: FastifyPluginAsync = async (app) => {
     const consent = await app.prisma.paymentConsent.findUnique({ where: { id: input.consentId } })
     if (!consent) throw new AppError(404, 'Consent not found', 'CONSENT_NOT_FOUND')
 
-    const result = await initiateJsPayment(app.prisma, consent.userId, input.consentId)
+    const result = await initiateJsPayment(app.prisma, input.consentId)
     return reply.code(201).send({ paymentId: result.paymentId })
   })
 

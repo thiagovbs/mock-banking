@@ -185,8 +185,15 @@ model PixTransfer {
 }
 
 enum PaymentConsentStatus {
+  // Jornada JSR: o consentimento nasce preso a um dispositivo ja aprovado e e
+  // autorizado pela assertion FIDO, sem redirecionar o titular.
   CREATED
+  // Jornada com redirecionamento: a Iniciadora cria o consentimento sem saber
+  // quem e o titular, e ele so vira AUTHORISED depois que a pessoa entra na
+  // tela da Detentora, ve valor e credor, escolhe a conta e confirma.
+  AWAITING_AUTHORISATION
   AUTHORISED
+  REJECTED
   PAYMENT_SUBMITTED
   COMPLETED
   EXPIRED
@@ -195,9 +202,14 @@ enum PaymentConsentStatus {
 model PaymentConsent {
   id                 String               @id @default(uuid())
   externalConsentId  String?              @unique @db.VarChar(255)
-  userId             String
-  customerId         String
-  accountId          String
+  // Nulos ate a autorizacao na jornada com redirecionamento: quem paga e de
+  // qual conta so se sabe quando o titular entra na tela e confirma.
+  userId             String?
+  customerId         String?
+  accountId          String?
+  // CPF a quem o consentimento foi enderecado, quando a Iniciadora o informa.
+  // Preenchido, so esse titular consegue autorizar.
+  debtorDocument     String?              @db.VarChar(191)
   amount             Decimal              @db.Decimal(15, 2)
   description        String?
   creditorName       String
@@ -212,15 +224,61 @@ model PaymentConsent {
   // credencial de fato o autorizou.
   enrollmentId       String?
   fidoCredentialId   String?
+  // Para onde devolver o navegador do titular ao fim da tela de autorizacao.
+  redirectUri        String?              @db.VarChar(500)
   createdAt          DateTime             @default(now())
+  statusUpdatedAt    DateTime             @default(now())
   authorisedAt       DateTime?
+  rejectedAt         DateTime?
   submittedAt        DateTime?
   expiredAt          DateTime?
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  // Para onde avisar a Iniciadora quando o status mudar. Sem isso ela so
+  // descobre o desfecho se o navegador do titular voltar.
+  webhookUri         String?              @db.VarChar(500)
+
+  account Account?              @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  events  PaymentConsentEvent[]
 
   @@index([userId, createdAt])
   @@index([accountId, createdAt])
+  @@index([debtorDocument, createdAt])
+}
+
+enum PaymentConsentEventActor {
+  INITIATOR
+  HOLDER
+  SYSTEM
+}
+
+enum PaymentConsentEventOutcome {
+  ACCEPTED
+  REFUSED
+}
+
+// Trilha de auditoria do consentimento de pagamento.
+//
+// O consentimento carrega o estado atual; esta tabela carrega o caminho ate
+// ele -- inclusive o que foi *tentado e recusado*, que nao deixa marca nenhuma
+// no consentimento. E o que responde "quem autorizou, quando, e o que a
+// Iniciadora tentou fazer antes disso".
+model PaymentConsentEvent {
+  id           String                     @id @default(uuid())
+  consentId    String
+  event        String                     @db.VarChar(60)
+  actor        PaymentConsentEventActor
+  actorUserId  String?
+  outcome      PaymentConsentEventOutcome @default(ACCEPTED)
+  // Codigo do AppError quando REFUSED (CONSENT_NOT_AUTHORISED, etc).
+  reason       String?                    @db.VarChar(60)
+  statusBefore PaymentConsentStatus?
+  statusAfter  PaymentConsentStatus?
+  detail       Json?
+  createdAt    DateTime                   @default(now())
+
+  consent PaymentConsent @relation(fields: [consentId], references: [id], onDelete: Cascade)
+
+  @@index([consentId, createdAt])
 }
 
 enum EnrollmentStatus {

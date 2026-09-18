@@ -3,6 +3,7 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString } from '../../shared/money.js'
 import { settlePaymentConsent } from '../payments/consent.js'
+import { recordConsentEvent } from '../payments/events.js'
 import { verifyFidoAssertion } from './assertion.js'
 
 /**
@@ -288,6 +289,19 @@ export async function createJsConsent(
     },
   })
 
+  await recordConsentEvent(prisma, {
+    consentId: consent.id,
+    event: 'CONSENT_CREATED',
+    actor: 'INITIATOR',
+    statusAfter: 'CREATED',
+    detail: {
+      amount: moneyToString(consent.amount),
+      creditorName: consent.creditorName,
+      enrollmentId: enrollment.id,
+      flow: 'FIDO_FLOW',
+    },
+  })
+
   return { consentId: consent.id, fidoChallenge, accountId: account.id }
 }
 
@@ -299,10 +313,39 @@ export async function authoriseJsConsent(
 ) {
   const consent = await prisma.paymentConsent.findUnique({ where: { id: consentId } })
   if (!consent) throw new AppError(404, 'Consent not found', 'CONSENT_NOT_FOUND')
+
+  // Mesma trilha da jornada com redirecionamento: assertion invalida, challenge
+  // trocado ou dispositivo revogado viram evento REFUSED, em vez de sumirem.
+  try {
+    await authoriseJs(prisma, secret, consent, body)
+  } catch (error) {
+    if (error instanceof AppError) {
+      await recordConsentEvent(prisma, {
+        consentId: consent.id,
+        event: 'CONSENT_AUTHORISATION',
+        actor: 'HOLDER',
+        actorUserId: consent.userId,
+        outcome: 'REFUSED',
+        reason: error.code,
+        statusBefore: consent.status,
+        detail: { flow: 'FIDO_FLOW', credentialId: body.credentialId ?? null },
+      })
+    }
+    throw error
+  }
+}
+
+async function authoriseJs(
+  prisma: PrismaClient,
+  secret: string,
+  consent: any,
+  body: { credentialId?: string; challenge?: string; signature?: string },
+) {
+  const consentId = consent.id
   if (consent.status !== 'CREATED') {
     throw new AppError(409, 'Consent is not awaiting authorisation', 'CONSENT_NOT_PENDING')
   }
-  if (!consent.enrollmentId) {
+  if (!consent.enrollmentId || !consent.userId) {
     throw new AppError(409, 'Consent is not bound to an enrollment', 'CONSENT_NOT_BOUND')
   }
 
@@ -364,13 +407,23 @@ export async function authoriseJsConsent(
   if (claimed.count === 0) {
     throw new AppError(409, 'Consent is not awaiting authorisation', 'CONSENT_NOT_PENDING')
   }
+
+  await recordConsentEvent(prisma, {
+    consentId: consent.id,
+    event: 'CONSENT_AUTHORISED',
+    actor: 'HOLDER',
+    actorUserId: consent.userId,
+    statusBefore: 'CREATED',
+    statusAfter: 'AUTHORISED',
+    detail: {
+      flow: 'FIDO_FLOW',
+      enrollmentId: consent.enrollmentId,
+      credentialId: body.credentialId,
+    },
+  })
 }
 
-export async function initiateJsPayment(
-  prisma: PrismaClient,
-  _userId: string,
-  consentId: string,
-) {
+export async function initiateJsPayment(prisma: PrismaClient, consentId: string) {
   // O titular vem do proprio consentimento; a rota JSR e autenticada pela
   // Iniciadora, nao por um usuario logado.
   return settlePaymentConsent(prisma, consentId)

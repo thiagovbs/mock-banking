@@ -25,6 +25,7 @@ const MODEL_NAMES = [
   'pixKey',
   'pixTransfer',
   'paymentConsent',
+  'paymentConsentEvent',
   'paymentRequest',
   'enrollment',
   'fidoCredential',

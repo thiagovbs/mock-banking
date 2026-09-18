@@ -14,6 +14,7 @@ Backend bancário simplificado construído com Node.js, TypeScript, Fastify, Pri
 - **Transferência PIX** entre contas internas (única origem de crédito)
 - Fachada de pagamentos (`/v1/me/payments`) com PIX, QR_CODE, BOLETO e BILL
 - Fluxo OAuth simplificado (autorize → login → token)
+- **Jornada de pagamento com redirecionamento (Open Finance)**: a Iniciadora cria o consentimento, o titular aprova numa tela que mostra valor e credor e deixa escolher a conta, e só então o pagamento liquida
 - **Jornada JSR (Open Finance)**: ITP enrollment, registro FIDO, consentimento e pagamento sem redirect
 - **Jornada de compartilhamento de dados (Open Finance)**: consentimento para outra conta ler saldo e extrato, conta a conta, com prazo definido ou indeterminado, autorizável por tela ou em texto, e revogável a qualquer momento
 - Controle de concorrência com `SELECT ... FOR UPDATE`
@@ -53,7 +54,8 @@ Variáveis principais:
 |---|---|
 | `DATABASE_URL` | Connection string MySQL (ex.: `mysql://user:senha@host:3306/Banking`) |
 | `JWT_SECRET` | Segredo para assinatura dos JWTs |
-| `INITIATOR_SERVICE_SECRET` | Segredo compartilhado com a Iniciadora (header `x-initiator-key`) usado nas rotas ITP/PISP JSR |
+| `INITIATOR_SERVICE_SECRET` | Segredo compartilhado com a Iniciadora (header `x-initiator-key`) usado nas rotas ITP/PISP JSR e na assinatura dos webhooks |
+| `WEBHOOK_ALLOWED_ORIGINS` | Origens para as quais o core pode avisar mudanca de status do consentimento, separadas por virgula. Vazio = nenhum webhook sai |
 | `PORT` | Porta HTTP (padrão `3000`) |
 | `HOST` | Host de bind (padrão `0.0.0.0`) |
 
@@ -293,6 +295,86 @@ curl http://localhost:3000/open-banking/pisp/payments/v5/jsr/pix/payments/<payme
   -H 'x-initiator-key: <INITIATOR_SERVICE_SECRET>'
 ```
 
+## Jornada de pagamento com redirecionamento (Open Finance)
+
+A Iniciadora pede o pagamento, mas quem autoriza é o titular — vendo valor e
+credor antes de confirmar. O consentimento nasce `AWAITING_AUTHORISATION`, sem
+titular e sem conta (nesta altura a Iniciadora não sabe quem vai pagar), e só a
+confirmação na tela o leva a `AUTHORISED`.
+
+### 1. Iniciadora cria o consentimento
+
+```bash
+curl -X POST http://localhost:3000/v1/aspsp/payments/consents   -H 'x-initiator-key: <INITIATOR_SERVICE_SECRET>' -H 'Content-Type: application/json'   -d '{
+    "amount": "25.00",
+    "creditorName": "Beneficiario",
+    "creditorDocument": "01688166360",
+    "creditorKey": { "type": "CPF", "value": "01688166360" },
+    "redirect_uri": "http://localhost:8100/callback"
+  }'
+```
+
+A resposta traz `authorisationUrl`. `debtorDocument` é opcional: informado, só
+aquele CPF consegue aprovar.
+
+### 2. Titular aprova — modo tela
+
+Abra a `authorisationUrl` no navegador. A tela mostra valor, credor e chave,
+pede usuário e senha e deixa o titular escolher **de qual conta dele** sai o
+dinheiro. Ao confirmar (ou recusar), o navegador é devolvido para
+`<redirect_uri>?consentId=...&status=AUTHORISED|REJECTED`.
+
+### 2b. Titular aprova — modo texto
+
+Para um chatbot já logado, sem abrir navegador:
+
+```bash
+curl http://localhost:3000/v1/me/payment-consents/$CONSENT_ID   -H "Authorization: Bearer $TOKEN_TITULAR"
+
+curl -X POST http://localhost:3000/v1/me/payment-consents/$CONSENT_ID/authorise   -H "Authorization: Bearer $TOKEN_TITULAR" -H 'Content-Type: application/json'   -d '{ "accountId": "<accountId>" }'
+```
+
+Os dois modos chamam o mesmo serviço e param no mesmo lugar: quem aprova tem
+que ser o titular enderecado no consentimento, e a conta tem que ser dele.
+
+### 3. Iniciadora acompanha sem depender do navegador
+
+Dois caminhos, para a Iniciadora nunca ficar dependendo de o titular voltar:
+
+```bash
+# Puxar: estado atual e trilha completa
+curl http://localhost:3000/v1/aspsp/payments/consents/$CONSENT_ID   -H 'x-initiator-key: <INITIATOR_SERVICE_SECRET>'
+
+curl http://localhost:3000/v1/aspsp/payments/consents/$CONSENT_ID/events   -H 'x-initiator-key: <INITIATOR_SERVICE_SECRET>'
+```
+
+**Empurrar:** informando `webhook_uri` na criação, o core faz `POST` nele a cada
+mudança de status, com o corpo assinado em `x-webhook-signature` (HMAC-SHA256
+do corpo cru, chave `INITIATOR_SERVICE_SECRET`). O destino precisa estar em
+`WEBHOOK_ALLOWED_ORIGINS`, senão a criação do consentimento responde `400
+WEBHOOK_URI_NOT_ALLOWED` — falha alto, para a Iniciadora não acreditar que será
+avisada.
+
+```json
+{
+  "consentId": "...",
+  "event": "CONSENT_AUTHORISED",
+  "status": "AUTHORISED",
+  "previousStatus": "AWAITING_AUTHORISATION",
+  "paymentId": null,
+  "timestamp": "2026-09-18T12:00:00.000Z"
+}
+```
+
+### 4. Iniciadora submete o pagamento
+
+```bash
+curl -X POST http://localhost:3000/v1/aspsp/payments   -H 'x-initiator-key: <INITIATOR_SERVICE_SECRET>' -H 'Content-Type: application/json'   -d '{ "consentId": "<consentId>" }'
+```
+
+Consentimento pendente ou recusado responde `409 CONSENT_NOT_AUTHORISED`. É a
+mesma função de liquidação usada pela jornada JSR.
+
 ## Jornada de compartilhamento de dados (Open Finance)
 
 O titular autoriza **outra conta** a ler o **saldo** e o **extrato** das contas
@@ -472,9 +554,17 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 |---|---|---|---|
 | POST | `/v1/me/payments` | JWT | Fachada de pagamento (PIX/QR_CODE/BOLETO/BILL) |
 | GET | `/v1/payments/{paymentId}` | JWT | Consulta um pagamento registrado |
-| POST | `/v1/aspsp/payments/consents` | JWT | Cria consentimento de pagamento (ASPSP) |
-| POST | `/v1/aspsp/payments` | JWT | Submete pagamento a partir de um consent |
-| GET | `/v1/aspsp/payments/{consentId}` | JWT | Consulta consentimento de pagamento |
+| POST | `/v1/aspsp/payments/consents` | Iniciadora | Cria consentimento de pagamento, pendente de aprovação |
+| GET | `/v1/aspsp/payments/consents/{consentId}` | Iniciadora | Consulta o consentimento e seu status |
+| GET | `/v1/aspsp/payments/consents/{consentId}/events` | Iniciadora | Trilha do consentimento: o que foi tentado, por quem, e o que passou |
+| POST | `/v1/aspsp/payments` | Iniciadora | Submete o pagamento de um consentimento **já aprovado** |
+| GET | `/v1/aspsp/payments/consents/{consentId}/authorise` | Aberta | Tela onde o titular revisa e aprova |
+| POST | `/v1/aspsp/payments/consents/{consentId}/authorise/login` | Aberta | Passo 1 da tela: identificação |
+| POST | `/v1/aspsp/payments/consents/{consentId}/authorise/confirm` | Aberta | Passo 2 da tela: escolhe a conta e aprova |
+| POST | `/v1/aspsp/payments/consents/{consentId}/authorise/reject` | Aberta | Passo 2 da tela: recusa |
+| GET | `/v1/me/payment-consents/{consentId}` | JWT | Modo texto: o que está sendo pedido + contas do titular |
+| POST | `/v1/me/payment-consents/{consentId}/authorise` | JWT | Modo texto: aprova indicando `accountId` |
+| POST | `/v1/me/payment-consents/{consentId}/reject` | JWT | Modo texto: recusa |
 
 ### Jornada JSR (Open Finance)
 
@@ -521,7 +611,8 @@ Legenda de autenticação: **(JWT)** = Bearer do usuário; **(INI)** = header `x
 - **Payment** — registro consultável de um pagamento da fachada, nos quatro métodos
 - **PixKey** — chave PIX associada a uma conta
 - **PixTransfer** — transferência PIX (origem ↔ destino, com `endToEndId` e `consentId` únicos)
-- **PaymentConsent** — consentimento de pagamento (ASPSP/JSR) com `fidoChallenge`
+- **PaymentConsent** — consentimento de pagamento (ASPSP/JSR). Na jornada com redirecionamento nasce sem titular e sem conta (AWAITING_AUTHORISATION → AUTHORISED → PAYMENT_SUBMITTED → COMPLETED, ou REJECTED); na JSR nasce CREATED com `fidoChallenge`
+- **PaymentConsentEvent** — trilha do consentimento: ator, desfecho, motivo da recusa e status antes/depois de cada passo, inclusive das tentativas barradas
 - **Enrollment** — vínculo de dispositivo ITP (status: CREATED → ACCOUNT_HOLDER_CONFIRMED → FIDO_REGISTERED)
 - **FidoCredential** — credencial FIDO do dispositivo
 - **AuthRequest** — fluxo OAuth simplificado (authorize → code → token)
@@ -582,6 +673,45 @@ A assinatura **não é WebAuthn**: Iniciadora e Detentora são dois backends que
 compartilham um segredo, e é o mesmo segredo que já autentica a Iniciadora.
 Ela prova conhecimento do challenge e da credencial corretos, não a
 participação do dispositivo do titular.
+
+### Pagamento iniciado por terceiro: consentimento antes do dinheiro
+
+As duas jornadas que nascem na Iniciadora terminam na mesma função,
+`settlePaymentConsent`, e ela só liquida um consentimento `AUTHORISED` com
+titular e conta vinculados. O que muda entre elas é **como** se chega a
+`AUTHORISED`:
+
+- **Com redirecionamento**: o consentimento nasce `AWAITING_AUTHORISATION` e o
+  titular aprova numa tela da Detentora, onde vê valor e credor e escolhe a
+  conta de débito. Antes, ele apenas fazia login e o consentimento era criado
+  já autorizado — a pessoa autenticava sem nunca ver o que estava pagando.
+- **Sem redirecionamento (JSR)**: o consentimento nasce `CREATED` preso a um
+  dispositivo **já aprovado** (enrollment `FIDO_REGISTERED`, não revogado), e a
+  aprovação é a assertion FIDO sobre aquele consentimento. O dispositivo é
+  reconferido na autorização **e** na liquidação: revogar corta pagamento em
+  andamento.
+
+Pagamento que o próprio titular inicia na Detentora (`/v1/me/payments`) não
+passa por consentimento: quem pede e quem autoriza são a mesma pessoa, já
+autenticada.
+
+### A trilha do consentimento, e por que ela é separada do status
+
+`PaymentConsent` guarda **onde** o consentimento está; `PaymentConsentEvent`
+guarda **como** ele chegou lá. A separação existe porque o que mais interessa
+auditar não muda o status: uma submissão barrada por consentimento pendente, uma
+aprovação tentada com o CPF errado, uma assertion FIDO inválida — nada disso
+deixa marca no consentimento. Sem os eventos, essas tentativas simplesmente não
+aconteceram do ponto de vista de quem audita.
+
+Cada evento registra ator (`INITIATOR`/`HOLDER`/`SYSTEM`), desfecho
+(`ACCEPTED`/`REFUSED`), o código do erro quando recusado, e o status antes e
+depois. As duas jornadas gravam na mesma tabela, então a leitura é uma só.
+
+Gravar o evento e avisar a Iniciadora vivem na mesma função, de propósito: não
+há como um acontecer sem o outro e as duas visões divergirem. E os dois são
+best-effort — registrar e avisar são consequências da operação, não
+pré-requisitos dela, então uma falha ali nunca derruba um pagamento.
 
 ### Compartilhamento de dados: o consentimento é o porteiro
 

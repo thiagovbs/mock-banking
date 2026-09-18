@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString } from '../../shared/money.js'
 import { executePixTransfer } from '../pix/service.js'
+import { recordConsentEvent } from './events.js'
 
 export type SettleConsentResult = {
   paymentId: string
@@ -40,12 +41,48 @@ export async function settlePaymentConsent(
   const consent = await prisma.paymentConsent.findUnique({ where: { id: consentId } })
   if (!consent) throw new AppError(404, 'Payment consent not found', 'CONSENT_NOT_FOUND')
 
+  // Toda saida deste ponto em diante vira evento: as recusas nao mudam nada no
+  // consentimento, entao sem isto uma submissao barrada nao deixaria rastro
+  // nenhum -- que e justamente o que se quer auditar.
+  try {
+    return await settle(prisma, consent, options)
+  } catch (error) {
+    if (error instanceof AppError) {
+      await recordConsentEvent(prisma, {
+        consentId: consent.id,
+        event: 'PAYMENT_SUBMISSION',
+        actor: 'INITIATOR',
+        outcome: 'REFUSED',
+        reason: error.code,
+        statusBefore: consent.status,
+      })
+    }
+    throw error
+  }
+}
+
+async function settle(
+  prisma: PrismaClient,
+  consent: any,
+  options: { requireUserId?: string },
+): Promise<SettleConsentResult> {
   if (options.requireUserId && consent.userId !== options.requireUserId) {
     throw new AppError(403, 'Consent does not belong to this user', 'CONSENT_FORBIDDEN')
   }
 
   if (consent.status !== 'AUTHORISED' && consent.status !== 'PAYMENT_SUBMITTED') {
     throw new AppError(409, 'Consent is not authorized', 'CONSENT_NOT_AUTHORISED')
+  }
+
+  // Na jornada com redirecionamento o consentimento nasce sem titular e sem
+  // conta -- ambos sao fixados na aprovacao. Um AUTHORISED sem eles seria um
+  // consentimento inconsistente, e nao ha conta de onde debitar.
+  if (!consent.accountId || !consent.userId) {
+    throw new AppError(
+      409,
+      'Consent has no account holder bound',
+      'CONSENT_NOT_BOUND',
+    )
   }
 
   // Consentimento JSR: o dispositivo precisa continuar ativo agora, e nao
@@ -73,6 +110,16 @@ export async function settlePaymentConsent(
     if (claimed.count === 0) {
       throw new AppError(409, 'Consent is already being submitted', 'CONSENT_NOT_AUTHORISED')
     }
+
+    await recordConsentEvent(prisma, {
+      consentId: consent.id,
+      event: 'PAYMENT_SUBMITTED',
+      actor: 'INITIATOR',
+      statusBefore: 'AUTHORISED',
+      statusAfter: 'PAYMENT_SUBMITTED',
+      webhookUri: consent.webhookUri,
+      paymentId,
+    })
   }
 
   if (!paymentId) {
@@ -95,6 +142,21 @@ export async function settlePaymentConsent(
   await prisma.paymentConsent.update({
     where: { id: consent.id },
     data: { status: 'COMPLETED' },
+  })
+
+  await recordConsentEvent(prisma, {
+    consentId: consent.id,
+    event: 'PAYMENT_COMPLETED',
+    actor: 'SYSTEM',
+    statusBefore: 'PAYMENT_SUBMITTED',
+    statusAfter: 'COMPLETED',
+    detail: {
+      endToEndId: result.transfer.endToEndId,
+      amount: moneyToString(result.transfer.amount),
+      idempotentReplay: result.idempotentReplay,
+    },
+    webhookUri: consent.webhookUri,
+    paymentId,
   })
 
   return {
