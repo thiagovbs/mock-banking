@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Prisma } from '@prisma/client'
 import { createMockPrisma, MockPrismaClient } from '../helpers/mock-prisma.js'
 import { settlePaymentConsent } from '../../src/modules/payments/consent.js'
@@ -200,7 +200,7 @@ describe('settlePaymentConsent', () => {
 
     expect(mock.paymentConsent.update).toHaveBeenCalledWith({
       where: { id: CONSENT_ID },
-      data: { status: 'COMPLETED' },
+      data: { status: 'COMPLETED', statusUpdatedAt: expect.any(Date) },
     })
   })
 
@@ -233,5 +233,130 @@ describe('settlePaymentConsent', () => {
     mock.paymentConsent.findUnique.mockResolvedValue(null)
 
     await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toThrow(AppError)
+  })
+
+  /**
+   * A reserva AUTHORISED -> PAYMENT_SUBMITTED acontece antes da transferencia,
+   * para o paymentId ser consultavel. Sem desfaze-la, um consentimento cuja
+   * liquidacao falha por motivo permanente ficava preso: nao liquidava, porque
+   * o motivo nao muda, e nao podia ser recusado, porque a recusa so aceita
+   * consentimento pendente.
+   */
+  describe('reserva desfeita quando a transferencia falha sem debitar', () => {
+    let fetchMock: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+      fetchMock = vi.fn().mockResolvedValue({ ok: true })
+      vi.stubGlobal('fetch', fetchMock)
+      mock.paymentConsentEvent.create.mockResolvedValue({})
+    })
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    /** Transferencia que falha antes de escrever qualquer coisa. */
+    function arrangeUnresolvableKey() {
+      mock.account.findFirst.mockResolvedValue({
+        id: 'acc-source',
+        customerId: 'cust-1',
+        status: 'ACTIVE',
+        balance: new Prisma.Decimal('500.00'),
+      })
+      mock.pixKey.findFirst.mockResolvedValue(null)
+      mock.pixTransfer.findUnique.mockResolvedValue(null)
+      mock.paymentConsent.updateMany.mockResolvedValue({ count: 1 })
+    }
+
+    it('devolve o consentimento para AUTHORISED e limpa o paymentId', async () => {
+      mock.paymentConsent.findUnique.mockResolvedValue(consentRow())
+      arrangeUnresolvableKey()
+
+      await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toThrow(AppError)
+
+      const release = mock.paymentConsent.updateMany.mock.calls.at(-1)[0]
+      expect(release.data).toMatchObject({
+        status: 'AUTHORISED',
+        paymentId: null,
+        submittedAt: null,
+      })
+      // O paymentId no where amarra o desfazer a reserva desta chamada.
+      expect(release.where).toMatchObject({ id: CONSENT_ID, status: 'PAYMENT_SUBMITTED' })
+      expect(release.where.paymentId).toBeTruthy()
+    })
+
+    it('registra o desfazer na trilha', async () => {
+      mock.paymentConsent.findUnique.mockResolvedValue(consentRow())
+      arrangeUnresolvableKey()
+
+      await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toThrow(AppError)
+
+      const eventos = mock.paymentConsentEvent.create.mock.calls.map((call) => call[0].data)
+      expect(eventos).toContainEqual(
+        expect.objectContaining({
+          event: 'PAYMENT_SUBMISSION_RELEASED',
+          statusBefore: 'PAYMENT_SUBMITTED',
+          statusAfter: 'AUTHORISED',
+        }),
+      )
+    })
+
+    it('nao avisa a Iniciadora do desfazer, para nao gerar laco de retentativa', async () => {
+      // O webhook diria "AUTHORISED", a Iniciadora submeteria de novo, falharia
+      // de novo, e o desfazer avisaria de novo.
+      mock.paymentConsent.findUnique.mockResolvedValue(
+        consentRow({ webhookUri: 'http://initiator.local/webhooks/consents' }),
+      )
+      arrangeUnresolvableKey()
+
+      await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toThrow(AppError)
+
+      const avisos = fetchMock.mock.calls.map((call) => JSON.parse(call[1].body).status)
+      expect(avisos).not.toContain('AUTHORISED')
+    })
+
+    it('mantem PAYMENT_SUBMITTED quando a transferencia ja tinha commitado', async () => {
+      // Dinheiro que saiu nao volta por desfazer status: manter a reserva deixa
+      // a retentativa concluir, porque executePixTransfer e idempotente.
+      mock.paymentConsent.findUnique.mockResolvedValue(consentRow())
+      arrangeTransfer()
+      let commitou = false
+      mock.pixTransfer.findUnique.mockImplementation(async () =>
+        commitou ? { id: 'transfer-1', consentId: CONSENT_ID } : null,
+      )
+      mock.pixTransfer.create.mockImplementation(async () => {
+        commitou = true
+        return {
+          id: 'transfer-1',
+          endToEndId: 'E1',
+          consentId: CONSENT_ID,
+          status: 'COMPLETED',
+          amount: new Prisma.Decimal('25.00'),
+          debitTransactionId: 'tx-debit',
+          createdAt: new Date(),
+        }
+      })
+      mock.account.update.mockRejectedValue(new Error('queda depois do débito'))
+
+      await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toThrow()
+
+      const reverteu = mock.paymentConsent.updateMany.mock.calls.some(
+        (call) => call[0].data?.status === 'AUTHORISED',
+      )
+      expect(reverteu).toBe(false)
+    })
+
+    it('nao desfaz a reserva de outra chamada', async () => {
+      // Entrou ja em PAYMENT_SUBMITTED: quem reservou foi outra tentativa,
+      // possivelmente ainda em curso.
+      mock.paymentConsent.findUnique.mockResolvedValue(
+        consentRow({ status: 'PAYMENT_SUBMITTED', paymentId: 'pay-de-outra-chamada' }),
+      )
+      arrangeUnresolvableKey()
+
+      await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toThrow(AppError)
+
+      expect(mock.paymentConsent.updateMany).not.toHaveBeenCalled()
+    })
   })
 })

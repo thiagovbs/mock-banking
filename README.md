@@ -695,6 +695,28 @@ Pagamento que o próprio titular inicia na Detentora (`/v1/me/payments`) não
 passa por consentimento: quem pede e quem autoriza são a mesma pessoa, já
 autenticada.
 
+### Reserva antes da transferência, e o desfazer
+
+A transição `AUTHORISED → PAYMENT_SUBMITTED` acontece **antes** da
+transferência, para que o `paymentId` — chave de consulta do pagamento — já
+esteja gravado se a chamada cair no meio.
+
+O preço disso é que uma liquidação que falha por motivo permanente
+(`SAME_ACCOUNT_PIX_TRANSFER`, `PIX_KEY_NOT_FOUND`, `CREDITOR_MISMATCH`) deixava o
+consentimento preso: não liquidava, porque o motivo não muda, e não podia ser
+recusado, porque a recusa só aceita consentimento pendente. Agora a reserva é
+desfeita quando a transferência falha **e nada foi debitado** — provado pela
+ausência de `PixTransfer` para aquele `consentId`. Só a chamada que reservou
+desfaz, e o `paymentId` no `where` amarra o desfazer àquela reserva.
+
+Se a transferência commitou e a falha veio depois, `PAYMENT_SUBMITTED` é
+mantido: `executePixTransfer` é idempotente por `consentId`, então a
+retentativa conclui em vez de debitar de novo.
+
+O desfazer grava evento mas **não dispara webhook**. Avisar `AUTHORISED` faria a
+Iniciadora submeter de novo, falhar de novo e gerar outro aviso — um laço. Ela
+fica sabendo pelo erro da própria chamada.
+
 ### A trilha do consentimento, e por que ela é separada do status
 
 `PaymentConsent` guarda **onde** o consentimento está; `PaymentConsentEvent`

@@ -98,6 +98,9 @@ async function settle(
   }
 
   let paymentId = consent.paymentId
+  // Só esta chamada pode desfazer a própria reserva: se o consentimento ja
+  // entrou aqui em PAYMENT_SUBMITTED, quem reservou foi outra tentativa.
+  let reserved = false
 
   if (consent.status === 'AUTHORISED') {
     paymentId = randomUUID()
@@ -105,11 +108,17 @@ async function settle(
     // disputam a mesma linha e apenas uma sai com count 1.
     const claimed = await prisma.paymentConsent.updateMany({
       where: { id: consent.id, status: 'AUTHORISED' },
-      data: { status: 'PAYMENT_SUBMITTED', paymentId, submittedAt: new Date() },
+      data: {
+        status: 'PAYMENT_SUBMITTED',
+        paymentId,
+        submittedAt: new Date(),
+        statusUpdatedAt: new Date(),
+      },
     })
     if (claimed.count === 0) {
       throw new AppError(409, 'Consent is already being submitted', 'CONSENT_NOT_AUTHORISED')
     }
+    reserved = true
 
     await recordConsentEvent(prisma, {
       consentId: consent.id,
@@ -126,22 +135,28 @@ async function settle(
     throw new AppError(500, 'Consent has no payment identifier', 'CONSENT_INCONSISTENT')
   }
 
-  const result = await executePixTransfer({
-    prisma,
-    sourceAccountId: consent.accountId,
-    userId: consent.userId,
-    amount: consent.amount,
-    input: {
-      pixKey: { type: consent.creditorKeyType, value: consent.creditorKeyValue },
-      consentId: consent.id,
-      description: consent.description ?? `PIX to ${consent.creditorName}`,
-      expectedCreditorDocument: consent.creditorDocument ?? undefined,
-    },
-  })
+  let result
+  try {
+    result = await executePixTransfer({
+      prisma,
+      sourceAccountId: consent.accountId,
+      userId: consent.userId,
+      amount: consent.amount,
+      input: {
+        pixKey: { type: consent.creditorKeyType, value: consent.creditorKeyValue },
+        consentId: consent.id,
+        description: consent.description ?? `PIX to ${consent.creditorName}`,
+        expectedCreditorDocument: consent.creditorDocument ?? undefined,
+      },
+    })
+  } catch (error) {
+    await releaseReservation(prisma, consent, paymentId, reserved)
+    throw error
+  }
 
   await prisma.paymentConsent.update({
     where: { id: consent.id },
-    data: { status: 'COMPLETED' },
+    data: { status: 'COMPLETED', statusUpdatedAt: new Date() },
   })
 
   await recordConsentEvent(prisma, {
@@ -167,5 +182,68 @@ async function settle(
     amount: moneyToString(result.transfer.amount),
     balance: moneyToString(result.sourceBalanceAfter),
     idempotentReplay: result.idempotentReplay,
+  }
+}
+
+/**
+ * Desfaz a reserva AUTHORISED -> PAYMENT_SUBMITTED quando a transferencia falha
+ * sem mover dinheiro.
+ *
+ * Sem isto, um consentimento cuja liquidacao falha por motivo permanente
+ * (chave do proprio pagador, chave inexistente, recebedor divergente) fica preso
+ * em PAYMENT_SUBMITTED para sempre: nao liquida, porque o motivo nao muda, e nao
+ * pode ser recusado, porque a recusa so aceita consentimento pendente. A conta
+ * do titular ficava presa a uma operacao que nunca aconteceu.
+ *
+ * Duas condicoes para desfazer, e as duas importam:
+ *
+ *  - `reserved`: so a chamada que fez a reserva a desfaz. Um consentimento que
+ *    ja entrou em PAYMENT_SUBMITTED e tentativa de outra chamada, possivelmente
+ *    ainda em curso.
+ *  - Nao existir PixTransfer para este consentimento: e o que prova que nada foi
+ *    debitado. Se a transferencia commitou e a falha veio depois, manter
+ *    PAYMENT_SUBMITTED e o certo -- `executePixTransfer` e idempotente por
+ *    consentId, entao uma retentativa conclui em vez de debitar de novo.
+ *
+ * O evento e gravado sem `webhookUri` de proposito: avisar a Iniciadora de que
+ * o consentimento voltou a AUTHORISED faria o webhook dela submeter de novo, e
+ * cada nova falha geraria outro aviso -- um laco. Ela ja fica sabendo pelo erro
+ * da propria chamada.
+ */
+async function releaseReservation(
+  prisma: PrismaClient,
+  consent: any,
+  paymentId: string,
+  reserved: boolean,
+): Promise<void> {
+  if (!reserved) return
+
+  try {
+    const transfer = await prisma.pixTransfer.findUnique({ where: { consentId: consent.id } })
+    if (transfer) return
+
+    const released = await prisma.paymentConsent.updateMany({
+      // O paymentId no where amarra a reserva a esta chamada.
+      where: { id: consent.id, status: 'PAYMENT_SUBMITTED', paymentId },
+      data: {
+        status: 'AUTHORISED',
+        paymentId: null,
+        submittedAt: null,
+        statusUpdatedAt: new Date(),
+      },
+    })
+    if (released.count === 0) return
+
+    await recordConsentEvent(prisma, {
+      consentId: consent.id,
+      event: 'PAYMENT_SUBMISSION_RELEASED',
+      actor: 'SYSTEM',
+      statusBefore: 'PAYMENT_SUBMITTED',
+      statusAfter: 'AUTHORISED',
+      detail: { paymentId },
+    })
+  } catch {
+    // Desfazer e best-effort: falhar aqui nao pode esconder o erro original da
+    // transferencia, que e o que o chamador precisa ver.
   }
 }
