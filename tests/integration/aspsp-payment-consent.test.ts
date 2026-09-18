@@ -297,6 +297,69 @@ describe('Pagamento com redirecionamento (ASPSP)', () => {
     })
   })
 
+  /**
+   * Atras da CSP do gateway (`form-action 'self'`) o navegador bloqueia o
+   * redirect que segue um POST de formulario quando o destino e outra origem --
+   * a Iniciadora. A tela ficava parada e a pessoa clicava de novo, achando que
+   * nao tinha enviado.
+   */
+  describe('volta para a Iniciadora sem redirect', () => {
+    it('confirma com meta refresh e link visivel, nao com 302', async () => {
+      mock.paymentConsent.findUnique
+        .mockResolvedValueOnce(consentRow())
+        .mockResolvedValueOnce(consentRow())
+        .mockResolvedValueOnce(consentRow())
+        .mockResolvedValue(
+          consentRow({ status: 'AUTHORISED', userId: HOLDER.sub, accountId: ACCOUNT_ID }),
+        )
+      mock.account.findFirst.mockResolvedValue(accountRow())
+      mock.account.findMany.mockResolvedValue([accountRow()])
+      mock.paymentConsent.updateMany.mockResolvedValue({ count: 1 })
+      mock.paymentConsentEvent.create.mockResolvedValue({})
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/aspsp/payments/consents/${CONSENT_ID}/authorise/confirm`,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: `token=${holderToken}&accountId=${ACCOUNT_ID}`,
+      })
+
+      expect(response.statusCode).toBe(200)
+      expect(response.headers['content-type']).toContain('text/html')
+
+      const refresh = /<meta http-equiv="refresh" content="\d+;url=([^"]+)"/.exec(response.body)
+      expect(refresh).not.toBeNull()
+      expect(refresh![1]).toContain('http://initiator.local/callback')
+      expect(refresh![1]).toContain('status=AUTHORISED')
+      // Se o refresh nao rodar, a jornada ainda termina com um clique.
+      expect(response.body).toContain('<a href=')
+    })
+
+    it('sem redirect_uri, mostra so o resultado', async () => {
+      mock.paymentConsent.findUnique
+        .mockResolvedValueOnce(consentRow({ redirectUri: null }))
+        .mockResolvedValueOnce(consentRow({ redirectUri: null }))
+        .mockResolvedValueOnce(consentRow({ redirectUri: null }))
+        .mockResolvedValue(
+          consentRow({ redirectUri: null, status: 'AUTHORISED', userId: HOLDER.sub, accountId: ACCOUNT_ID }),
+        )
+      mock.account.findFirst.mockResolvedValue(accountRow())
+      mock.paymentConsent.updateMany.mockResolvedValue({ count: 1 })
+      mock.paymentConsentEvent.create.mockResolvedValue({})
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/aspsp/payments/consents/${CONSENT_ID}/authorise/confirm`,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: `token=${holderToken}&accountId=${ACCOUNT_ID}`,
+      })
+
+      expect(response.statusCode).toBe(200)
+      expect(response.body).toContain('Pagamento autorizado')
+      expect(response.body).not.toContain('http-equiv="refresh"')
+    })
+  })
+
   describe('trilha de eventos', () => {
     it('registra a criacao do consentimento', async () => {
       mock.paymentConsent.create.mockResolvedValue(consentRow())

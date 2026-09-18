@@ -302,10 +302,11 @@ const aspspRoutes: FastifyPluginAsync = async (app) => {
       accountId: input.accountId,
     })
 
+    // Pagina com meta refresh em vez de 302: atras da CSP do gateway
+    // (`form-action 'self'`) um redirect apos POST de formulario para outra
+    // origem e bloqueado, e a tela fica parada.
     const back = consentCallbackUrl(redirectUri, consentId, 'AUTHORISED')
-    if (back) return reply.redirect(back)
-
-    return reply.type('text/html').send(paymentResultStepHtml(view, true))
+    return reply.type('text/html').send(paymentResultStepHtml(view, true, back))
   })
 
   app.post('/v1/aspsp/payments/consents/:consentId/authorise/reject', async (request, reply) => {
@@ -319,9 +320,7 @@ const aspspRoutes: FastifyPluginAsync = async (app) => {
     await rejectPaymentConsent({ prisma: app.prisma, consentId, granter })
 
     const back = consentCallbackUrl(redirectUri, consentId, 'REJECTED')
-    if (back) return reply.redirect(back)
-
-    return reply.type('text/html').send(paymentResultStepHtml(view, false))
+    return reply.type('text/html').send(paymentResultStepHtml(view, false, back))
   })
 
   // ---------------------------------------------------------------------

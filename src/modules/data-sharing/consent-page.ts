@@ -26,7 +26,7 @@ const PERMISSION_LABELS: Record<string, { title: string; detail: string }> = {
   },
 }
 
-import { ASSET_PATHS } from '../assets/routes.js'
+import { ASSET_PATHS, metaRefreshTag, returnLinkHtml } from '../assets/routes.js'
 
 function escapeHtml(value: string): string {
   return value
@@ -42,14 +42,14 @@ function escapeHtml(value: string): string {
  * O CSS vem de arquivo, e nao de <style> inline: atras do gateway a CSP traz
  * `style-src 'self'`, que recusa estilo inline e deixava a tela crua.
  */
-function page(title: string, baseUrl: string, body: string): string {
+function page(title: string, baseUrl: string, body: string, returnUrl?: string | null): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(title)}</title>
-  <link rel="stylesheet" href="${escapeHtml(baseUrl)}${ASSET_PATHS.css}" />
+  <link rel="stylesheet" href="${escapeHtml(baseUrl)}${ASSET_PATHS.css}" />${metaRefreshTag(returnUrl)}
 </head>
 <body>
   <div class="card">
@@ -181,6 +181,7 @@ export function resultStepHtml(
   granteeName: string,
   authorised: boolean,
   baseUrl: string,
+  returnUrl?: string | null,
 ): string {
   return page(
     'Compartilhamento de dados',
@@ -196,6 +197,8 @@ export function resultStepHtml(
       authorised
         ? 'Você pode revogar quando quiser, em Compartilhamento de dados.'
         : 'Nenhum dado seu foi compartilhado.'
-    }</p>`,
+    }</p>
+${returnLinkHtml(returnUrl, 'Voltar agora')}`,
+    returnUrl,
   )
 }

@@ -745,6 +745,28 @@ direto e em desenvolvimento.
 
 Vale para as duas jornadas com tela: pagamento e compartilhamento de dados.
 
+### Telas atrás de um gateway: CSP
+
+O gateway devolve as respostas com uma Content-Security-Policy estrita, e três
+diretivas dela batem de frente com o jeito óbvio de escrever uma tela:
+
+| Diretiva | O que quebrava |
+|---|---|
+| `style-src 'self'` | `<style>` inline era recebido e **descartado** — tela crua, sem estilo |
+| `img-src 'self'` | logo em `data:` URI não renderizava |
+| `form-action 'self'` | o `302` **depois do POST do formulário** era bloqueado, porque o destino é a Iniciadora — a tela ficava parada e a pessoa clicava de novo |
+
+Por isso o CSS e o logo são servidos como arquivo em `/v1/assets/...`, e o
+retorno a quem iniciou a jornada usa `<meta http-equiv="refresh">` em vez de
+redirect. Meta refresh é navegação comum, fora do alcance de `form-action`. Junto
+vai sempre um link visível: se o refresh não rodar, a jornada termina com um
+clique em vez de numa tela morta.
+
+A última linha da tabela merece atenção de quem for mexer: o sintoma é cruel,
+porque **a operação acontece** — o consentimento é autorizado, o pagamento
+liquida pelo webhook — e só o navegador fica parado, convidando a pessoa a
+clicar de novo.
+
 ### A trilha do consentimento, e por que ela é separada do status
 
 `PaymentConsent` guarda **onde** o consentimento está; `PaymentConsentEvent`

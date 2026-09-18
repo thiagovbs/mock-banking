@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { AppError } from '../../shared/errors.js'
 import { publicBaseUrl } from '../../shared/public-url.js'
-import { ASSET_PATHS } from '../assets/routes.js'
+import { ASSET_PATHS, metaRefreshTag, returnLinkHtml } from '../assets/routes.js'
 
 const authorizeSchema = z.object({
   redirect_uri: z.string().url(),
@@ -57,6 +57,35 @@ function loginPageHtml(baseUrl: string, requestId: string, error?: string): stri
       <input type="password" id="password" name="password" autocomplete="current-password" required />
       <button type="submit">Entrar</button>
     </form>
+    <div class="footer">Sensedia · API Platform</div>
+  </div>
+</body>
+</html>`
+}
+
+/**
+ * Tela de volta a Iniciadora depois do login.
+ *
+ * Responder 302 aqui nao funciona atras da CSP do gateway: `form-action 'self'`
+ * alcanca tambem o redirect que segue o POST do formulario, e o destino e outra
+ * origem. O meta refresh nao cai nessa diretiva.
+ */
+function returningPageHtml(baseUrl: string, returnUrl: string): string {
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Autenticado</title>
+  <link rel="stylesheet" href="${escapeAttr(baseUrl)}${ASSET_PATHS.css}" />${metaRefreshTag(returnUrl)}
+</head>
+<body>
+  <div class="card login">
+    <img class="logo" src="${escapeAttr(baseUrl)}${ASSET_PATHS.logo}" alt="Sensedia" />
+    <div class="eyebrow">Acesso seguro</div>
+    <h1>Tudo certo</h1>
+    <p class="subtitle">Voltando para onde você começou...</p>
+${returnLinkHtml(returnUrl, 'Continuar agora')}
     <div class="footer">Sensedia · API Platform</div>
   </div>
 </body>
@@ -117,7 +146,8 @@ const oauthRoutes: FastifyPluginAsync = async (app) => {
     })
 
     const separator = authRequest.redirectUri.includes('?') ? '&' : '?'
-    return reply.redirect(`${authRequest.redirectUri}${separator}code=${code}&state=${authRequest.id}`)
+    const back = `${authRequest.redirectUri}${separator}code=${code}&state=${authRequest.id}`
+    return reply.type('text/html').send(returningPageHtml(publicBaseUrl(request), back))
   })
 
   app.post('/v1/auth/token', async (request) => {

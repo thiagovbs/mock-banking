@@ -517,7 +517,10 @@ describe('Compartilhamento de dados', () => {
       expect(mock.dataSharingConsent.create).not.toHaveBeenCalled()
     })
 
-    it('redireciona com consentId e status apos autorizar na tela', async () => {
+    // Meta refresh em vez de 302: atras da CSP do gateway (`form-action 'self'`)
+    // um redirect apos POST de formulario para outra origem e bloqueado, e a
+    // tela fica parada.
+    it('devolve o navegador com consentId e status apos autorizar na tela', async () => {
       mock.dataSharingConsent.findUnique.mockResolvedValue(
         consentRow({ status: 'AWAITING_AUTHORISATION', granterUserId: null, accounts: [], redirectUri: CALLBACK }),
       )
@@ -531,10 +534,14 @@ describe('Compartilhamento de dados', () => {
         payload: `token=${granterToken}&accountIds=${ACCOUNT_ID}`,
       })
 
-      expect(response.statusCode).toBe(302)
-      expect(response.headers.location).toBe(
-        `${CALLBACK}?consentId=${encodeURIComponent(CONSENT_URN)}&status=AUTHORISED`,
+      expect(response.statusCode).toBe(200)
+      const refresh = /<meta http-equiv="refresh" content="\d+;url=([^"]+)"/.exec(response.body)
+      expect(refresh).not.toBeNull()
+      expect(refresh![1]).toBe(
+        `${CALLBACK}?consentId=${encodeURIComponent(CONSENT_URN)}&amp;status=AUTHORISED`,
       )
+      // O link visivel acompanha, para a jornada nao morrer se o refresh falhar.
+      expect(response.body).toContain('<a href=')
     })
 
     it('redireciona com status REJECTED quando o titular recusa', async () => {
@@ -558,8 +565,10 @@ describe('Compartilhamento de dados', () => {
         payload: `token=${granterToken}`,
       })
 
-      expect(response.statusCode).toBe(302)
-      expect(response.headers.location).toContain('status=REJECTED')
+      expect(response.statusCode).toBe(200)
+      const refresh = /<meta http-equiv="refresh" content="\d+;url=([^"]+)"/.exec(response.body)
+      expect(refresh).not.toBeNull()
+      expect(refresh![1]).toContain('status=REJECTED')
     })
 
     it('sem redirect_uri, continua terminando na pagina de conclusao', async () => {

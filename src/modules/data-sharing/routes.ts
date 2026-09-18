@@ -340,10 +340,11 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
       accountIds,
     })
 
+    // Meta refresh em vez de 302: ver metaRefreshTag.
     const back = consentCallbackUrl(page.redirectUri, page.id, 'AUTHORISED')
-    if (back) return reply.redirect(back)
-
-    return reply.type('text/html').send(resultStepHtml(page.granteeName, true, page.baseUrl))
+    return reply
+      .type('text/html')
+      .send(resultStepHtml(page.granteeName, true, page.baseUrl, back))
   })
 
   app.post('/v1/data-sharing/consents/:consentId/authorise/reject', async (request, reply) => {
@@ -361,9 +362,9 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     })
 
     const back = consentCallbackUrl(page.redirectUri, page.id, 'REJECTED')
-    if (back) return reply.redirect(back)
-
-    return reply.type('text/html').send(resultStepHtml(page.granteeName, false, page.baseUrl))
+    return reply
+      .type('text/html')
+      .send(resultStepHtml(page.granteeName, false, page.baseUrl, back))
   })
 
   // ---------------------------------------------------------------------

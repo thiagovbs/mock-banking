@@ -139,6 +139,40 @@ export const SENSEDIA_LOGO_SVG =
   '<text x="406" y="130" font-family="Arial, sans-serif" font-size="60" font-weight="700" ' +
   'fill="#8241B0" text-anchor="middle">Sensedia</text></svg>'
 
+/** Segundos de leitura antes de devolver o navegador a quem iniciou a jornada. */
+const RETURN_DELAY_SECONDS = 2
+
+function escapeAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+/**
+ * Redirecionamento que sobrevive a CSP do gateway.
+ *
+ * Responder 302 depois de um POST de formulario nao funciona atras de
+ * `form-action 'self'`: o navegador aplica a diretiva tambem ao redirect que
+ * segue a submissao, e como o destino e a Iniciadora -- outra origem -- ele e
+ * bloqueado. A tela fica parada, e a pessoa clica de novo achando que nao
+ * enviou. Meta refresh e navegacao comum, fora do alcance de form-action.
+ *
+ * O link visivel acompanha de proposito: se o refresh nao rodar, a jornada
+ * continua sendo concluivel com um clique, em vez de terminar numa tela morta.
+ */
+export function metaRefreshTag(url: string | null | undefined): string {
+  if (!url) return ''
+  return `
+  <meta http-equiv="refresh" content="${RETURN_DELAY_SECONDS};url=${escapeAttr(url)}" />`
+}
+
+export function returnLinkHtml(url: string | null | undefined, label: string): string {
+  if (!url) return ''
+  return `    <p class="subtitle"><a href="${escapeAttr(url)}">${label}</a></p>`
+}
+
 /** Caminhos usados pelas telas para montar `<link>` e `<img>`. */
 export const ASSET_PATHS = {
   css: '/v1/assets/consent.css',

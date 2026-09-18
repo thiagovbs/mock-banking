@@ -14,7 +14,7 @@
  * entao o seletor e radio, e nao checkbox.
  */
 
-import { ASSET_PATHS } from '../assets/routes.js'
+import { ASSET_PATHS, metaRefreshTag, returnLinkHtml } from '../assets/routes.js'
 
 function escapeHtml(value: string): string {
   return value
@@ -30,14 +30,14 @@ function escapeHtml(value: string): string {
  * O CSS vem de arquivo, e nao de <style> inline: atras do gateway a CSP traz
  * `style-src 'self'`, que recusa estilo inline e deixava a tela crua.
  */
-function page(title: string, baseUrl: string, body: string): string {
+function page(title: string, baseUrl: string, body: string, returnUrl?: string | null): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(title)}</title>
-  <link rel="stylesheet" href="${escapeHtml(baseUrl)}${ASSET_PATHS.css}" />
+  <link rel="stylesheet" href="${escapeHtml(baseUrl)}${ASSET_PATHS.css}" />${metaRefreshTag(returnUrl)}
 </head>
 <body>
   <div class="card">
@@ -177,6 +177,7 @@ ${accountsBlock}
 export function paymentResultStepHtml(
   consent: PaymentConsentPageView,
   authorised: boolean,
+  returnUrl?: string | null,
 ): string {
   return page(
     'Autorização de pagamento',
@@ -192,6 +193,8 @@ export function paymentResultStepHtml(
       authorised
         ? 'Você pode voltar para a loja: ela vai concluir o pagamento.'
         : 'A loja foi avisada de que você recusou.'
-    }</p>`,
+    }</p>
+${returnLinkHtml(returnUrl, 'Voltar para a loja agora')}`,
+    returnUrl,
   )
 }
