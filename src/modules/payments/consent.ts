@@ -70,6 +70,14 @@ async function settle(
     throw new AppError(403, 'Consent does not belong to this user', 'CONSENT_FORBIDDEN')
   }
 
+  // Consentimento ja liquidado: devolve o pagamento que existe, em vez de
+  // recusar. Uma Iniciadora que reenvia apos timeout precisa saber que deu
+  // certo; recusar com "Consent is not authorized" a faria procurar um problema
+  // de autorizacao num pagamento que ja foi pago.
+  if (consent.status === 'COMPLETED') {
+    return replayCompletedPayment(prisma, consent)
+  }
+
   if (consent.status !== 'AUTHORISED' && consent.status !== 'PAYMENT_SUBMITTED') {
     throw new AppError(409, 'Consent is not authorized', 'CONSENT_NOT_AUTHORISED')
   }
@@ -245,5 +253,51 @@ async function releaseReservation(
   } catch {
     // Desfazer e best-effort: falhar aqui nao pode esconder o erro original da
     // transferencia, que e o que o chamador precisa ver.
+  }
+}
+
+/**
+ * Resposta de um consentimento que ja liquidou.
+ *
+ * Nada e reexecutado: os dados saem do PixTransfer gravado na liquidacao
+ * original, e o `paymentId` e o mesmo que o chamador recebeu da primeira vez.
+ * `balance` e o saldo **atual** da conta pagadora, nao o do momento do debito --
+ * outras operacoes podem ter acontecido desde entao.
+ */
+async function replayCompletedPayment(
+  prisma: PrismaClient,
+  consent: any,
+): Promise<SettleConsentResult> {
+  const transfer = await prisma.pixTransfer.findUnique({ where: { consentId: consent.id } })
+
+  const account = consent.accountId
+    ? await prisma.account.findUnique({ where: { id: consent.accountId } })
+    : null
+
+  // COMPLETED sem transferencia, sem paymentId ou sem conta e estado
+  // inconsistente, e nao ha o que devolver: recusar e melhor que inventar um
+  // recibo.
+  if (!transfer || !consent.paymentId || !account) {
+    throw new AppError(409, 'Consent is not authorized', 'CONSENT_NOT_AUTHORISED')
+  }
+
+  await recordConsentEvent(prisma, {
+    consentId: consent.id,
+    event: 'PAYMENT_SUBMISSION_REPLAYED',
+    actor: 'INITIATOR',
+    statusBefore: 'COMPLETED',
+    statusAfter: 'COMPLETED',
+    detail: { paymentId: consent.paymentId },
+    paymentId: consent.paymentId,
+  })
+
+  return {
+    paymentId: consent.paymentId,
+    consentId: consent.id,
+    endToEndId: transfer.endToEndId,
+    status: transfer.status,
+    amount: moneyToString(transfer.amount),
+    balance: moneyToString(account.balance),
+    idempotentReplay: true,
   }
 }

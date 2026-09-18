@@ -204,7 +204,7 @@ describe('settlePaymentConsent', () => {
     })
   })
 
-  it.each([['CREATED'], ['COMPLETED'], ['EXPIRED']])(
+  it.each([['CREATED'], ['EXPIRED'], ['AWAITING_AUTHORISATION'], ['REJECTED']])(
     'refuses a consent in status %s',
     async (status) => {
       mock.paymentConsent.findUnique.mockResolvedValue(consentRow({ status }))
@@ -227,6 +227,85 @@ describe('settlePaymentConsent', () => {
     arrangeTransfer()
 
     await expect(settlePaymentConsent(mock as never, CONSENT_ID)).resolves.toBeDefined()
+  })
+
+  /**
+   * Uma Iniciadora que reenvia apos timeout precisa saber que deu certo. Antes,
+   * repetir um consentimento liquidado respondia "Consent is not authorized" --
+   * mandando procurar um problema de autorizacao num pagamento que ja foi pago.
+   */
+  describe('consentimento ja liquidado', () => {
+    function arrangeCompleted(overrides: Record<string, unknown> = {}) {
+      mock.paymentConsent.findUnique.mockResolvedValue(
+        consentRow({ status: 'COMPLETED', paymentId: 'pay-original', ...overrides }),
+      )
+      mock.pixTransfer.findUnique.mockResolvedValue({
+        id: 'transfer-1',
+        consentId: CONSENT_ID,
+        endToEndId: 'E000000002026010100000000000000000000000',
+        status: 'COMPLETED',
+        amount: new Prisma.Decimal('25.00'),
+      })
+      mock.account.findUnique.mockResolvedValue({
+        id: 'acc-source',
+        balance: new Prisma.Decimal('475.00'),
+      })
+      mock.paymentConsentEvent.create.mockResolvedValue({})
+    }
+
+    it('devolve o pagamento existente como replay, sem debitar de novo', async () => {
+      arrangeCompleted()
+
+      const result = await settlePaymentConsent(mock as never, CONSENT_ID)
+
+      expect(result.idempotentReplay).toBe(true)
+      expect(result.paymentId).toBe('pay-original')
+      expect(result.endToEndId).toBe('E000000002026010100000000000000000000000')
+      expect(result.amount).toBe('25.00')
+      // Nada se move, e o consentimento nao e reescrito.
+      expect(mock.pixTransfer.create).not.toHaveBeenCalled()
+      expect(mock.paymentConsent.updateMany).not.toHaveBeenCalled()
+      expect(mock.paymentConsent.update).not.toHaveBeenCalled()
+    })
+
+    it('registra o replay na trilha', async () => {
+      arrangeCompleted()
+
+      await settlePaymentConsent(mock as never, CONSENT_ID)
+
+      expect(mock.paymentConsentEvent.create.mock.calls[0][0].data).toMatchObject({
+        event: 'PAYMENT_SUBMISSION_REPLAYED',
+        outcome: 'ACCEPTED',
+        statusBefore: 'COMPLETED',
+        statusAfter: 'COMPLETED',
+      })
+    })
+
+    it('recusa um COMPLETED sem transferencia registrada', async () => {
+      // Estado inconsistente: melhor recusar que inventar um recibo.
+      arrangeCompleted()
+      mock.pixTransfer.findUnique.mockResolvedValue(null)
+
+      await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toMatchObject({
+        code: 'CONSENT_NOT_AUTHORISED',
+      })
+    })
+
+    it('recusa um COMPLETED sem paymentId', async () => {
+      arrangeCompleted({ paymentId: null })
+
+      await expect(settlePaymentConsent(mock as never, CONSENT_ID)).rejects.toMatchObject({
+        code: 'CONSENT_NOT_AUTHORISED',
+      })
+    })
+
+    it('respeita a titularidade tambem no replay', async () => {
+      arrangeCompleted()
+
+      await expect(
+        settlePaymentConsent(mock as never, CONSENT_ID, { requireUserId: 'someone-else' }),
+      ).rejects.toMatchObject({ code: 'CONSENT_FORBIDDEN' })
+    })
   })
 
   it('reports 404 for an unknown consent', async () => {

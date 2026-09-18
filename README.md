@@ -375,6 +375,12 @@ curl -X POST http://localhost:3000/v1/aspsp/payments   -H 'x-initiator-key: <INI
 Consentimento pendente ou recusado responde `409 CONSENT_NOT_AUTHORISED`. É a
 mesma função de liquidação usada pela jornada JSR.
 
+Repetir a submissão de um consentimento **já liquidado** devolve `200` com o
+mesmo `paymentId` e `idempotentReplay: true`, sem debitar de novo. Quem reenvia
+após um timeout precisa saber que deu certo — recusar com “Consent is not
+authorized” mandaria procurar um problema de autorização num pagamento que já
+foi pago.
+
 ## Jornada de compartilhamento de dados (Open Finance)
 
 O titular autoriza **outra conta** a ler o **saldo** e o **extrato** das contas
