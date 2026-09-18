@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { JwtUser } from '../../plugins/auth.js'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString } from '../../shared/money.js'
+import { publicBaseUrl } from '../../shared/public-url.js'
 import {
   authoriseDataSharingConsent,
   createDataSharingConsent,
@@ -69,7 +70,7 @@ const confirmFormSchema = z.object({
 })
 
 function selfLink(request: FastifyRequest): string {
-  return `${request.protocol}://${request.host}${request.url}`
+  return `${publicBaseUrl(request)}${request.url}`
 }
 
 function requestMeta(totalRecords?: number) {
@@ -119,7 +120,7 @@ async function loadActor(app: any, user: JwtUser) {
   }
 }
 
-async function loadConsentForPage(app: any, consentId: string) {
+async function loadConsentForPage(app: any, consentId: string, request: FastifyRequest) {
   const consent = await app.prisma.dataSharingConsent.findUnique({ where: { id: consentId } })
   if (!consent) throw new AppError(404, 'Data sharing consent not found', 'CONSENT_NOT_FOUND')
 
@@ -135,6 +136,7 @@ async function loadConsentForPage(app: any, consentId: string) {
     raw: consent,
     page: {
       id: consent.id,
+      baseUrl: publicBaseUrl(request),
       granteeName: grantee?.name ?? 'Instituição receptora',
       permissions,
       expiresAt: consent.expiresAt ? new Date(consent.expiresAt) : null,
@@ -166,7 +168,7 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     // `links.redirect` nao faz parte do OFB (la o redirect vem do fluxo OIDC);
     // e a extensao que permite ao chatbot abrir a tela de autorizacao.
     const consentUuid = parseConsentId(consent.consentId)
-    const authorisationUrl = `${request.protocol}://${request.host}/v1/data-sharing/consents/${consentUuid}/authorise`
+    const authorisationUrl = `${publicBaseUrl(request)}/v1/data-sharing/consents/${consentUuid}/authorise`
 
     return reply.code(201).send({
       data: consentPayload(consent),
@@ -232,7 +234,7 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     const user = request.user as JwtUser
     const { consentId } = consentParams.parse(request.params)
     const granter = await loadActor(app, user)
-    const { page } = await loadConsentForPage(app, parseConsentId(consentId))
+    const { page } = await loadConsentForPage(app, parseConsentId(consentId), request)
 
     const accounts = await app.prisma.account.findMany({
       where: { customer: { is: { userId: granter.userId } } },
@@ -260,14 +262,14 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
 
   app.get('/v1/data-sharing/consents/:consentId/authorise', async (request, reply) => {
     const { consentId } = consentParams.parse(request.params)
-    const { page } = await loadConsentForPage(app, parseConsentId(consentId))
+    const { page } = await loadConsentForPage(app, parseConsentId(consentId), request)
     return reply.type('text/html').send(loginStepHtml(page))
   })
 
   app.post('/v1/data-sharing/consents/:consentId/authorise/login', async (request, reply) => {
     const { consentId } = consentParams.parse(request.params)
     const input = loginFormSchema.parse(request.body)
-    const { page } = await loadConsentForPage(app, parseConsentId(consentId))
+    const { page } = await loadConsentForPage(app, parseConsentId(consentId), request)
 
     const user = await app.prisma.user.findUnique({
       where: { username: input.username },
@@ -305,7 +307,7 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
   app.post('/v1/data-sharing/consents/:consentId/authorise/confirm', async (request, reply) => {
     const { consentId } = consentParams.parse(request.params)
     const input = confirmFormSchema.parse(request.body)
-    const { page } = await loadConsentForPage(app, parseConsentId(consentId))
+    const { page } = await loadConsentForPage(app, parseConsentId(consentId), request)
 
     const session = verifyConsentSession(app, input.token)
     const granter = await loadActor(app, session)
@@ -347,7 +349,7 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
   app.post('/v1/data-sharing/consents/:consentId/authorise/reject', async (request, reply) => {
     const { consentId } = consentParams.parse(request.params)
     const input = confirmFormSchema.parse(request.body)
-    const { page } = await loadConsentForPage(app, parseConsentId(consentId))
+    const { page } = await loadConsentForPage(app, parseConsentId(consentId), request)
 
     const session = verifyConsentSession(app, input.token)
     const granter = await loadActor(app, session)

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { JwtUser } from '../../plugins/auth.js'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString, parseMoney } from '../../shared/money.js'
+import { publicBaseUrl } from '../../shared/public-url.js'
 import {
   authorisePaymentConsent,
   createPaymentConsent,
@@ -78,9 +79,10 @@ async function loadGranter(app: any, user: JwtUser): Promise<Granter> {
   return { userId: user.sub, customerId: customer.id, document: customer.document }
 }
 
-function toPageView(consent: PaymentConsentView): PaymentConsentPageView {
+function toPageView(consent: PaymentConsentView, baseUrl: string): PaymentConsentPageView {
   return {
     id: consent.consentId,
+    baseUrl,
     amount: consent.amount,
     creditorName: consent.creditorName,
     creditorDocument: consent.creditorDocument,
@@ -118,10 +120,14 @@ const aspspRoutes: FastifyPluginAsync = async (app) => {
    * Carrega o consentimento para a tela, junto do redirectUri cru (que a view
    * nao carrega, para nao vazar em HTML).
    */
-  async function loadForPage(consentId: string) {
+  async function loadForPage(consentId: string, request: FastifyRequest) {
     const consent = await getPaymentConsent(app.prisma, consentId)
     const raw = await app.prisma.paymentConsent.findUnique({ where: { id: consentId } })
-    return { view: toPageView(consent), consent, redirectUri: (raw?.redirectUri ?? null) as string | null }
+    return {
+      view: toPageView(consent, publicBaseUrl(request)),
+      consent,
+      redirectUri: (raw?.redirectUri ?? null) as string | null,
+    }
   }
 
   async function activeAccountsOf(userId: string) {
@@ -175,7 +181,7 @@ const aspspRoutes: FastifyPluginAsync = async (app) => {
 
       // A Iniciadora abre esta URL no navegador do titular. E o unico caminho
       // que tira o consentimento de AWAITING_AUTHORISATION nesta jornada.
-      const authorisationUrl = `${request.protocol}://${request.host}/v1/aspsp/payments/consents/${consent.consentId}/authorise`
+      const authorisationUrl = `${publicBaseUrl(request)}/v1/aspsp/payments/consents/${consent.consentId}/authorise`
 
       return reply
         .header('x-pisp-consent-id', consent.consentId)
@@ -238,14 +244,14 @@ const aspspRoutes: FastifyPluginAsync = async (app) => {
 
   app.get('/v1/aspsp/payments/consents/:consentId/authorise', async (request, reply) => {
     const { consentId } = consentParams.parse(request.params)
-    const { view } = await loadForPage(consentId)
+    const { view } = await loadForPage(consentId, request)
     return reply.type('text/html').send(paymentLoginStepHtml(view))
   })
 
   app.post('/v1/aspsp/payments/consents/:consentId/authorise/login', async (request, reply) => {
     const { consentId } = consentParams.parse(request.params)
     const input = loginFormSchema.parse(request.body)
-    const { view } = await loadForPage(consentId)
+    const { view } = await loadForPage(consentId, request)
 
     const user = await app.prisma.user.findUnique({
       where: { username: input.username },
@@ -271,7 +277,7 @@ const aspspRoutes: FastifyPluginAsync = async (app) => {
   app.post('/v1/aspsp/payments/consents/:consentId/authorise/confirm', async (request, reply) => {
     const { consentId } = consentParams.parse(request.params)
     const input = confirmFormSchema.parse(request.body)
-    const { view, redirectUri } = await loadForPage(consentId)
+    const { view, redirectUri } = await loadForPage(consentId, request)
 
     const session = verifyConsentSession(app, input.token)
     const granter = await loadGranter(app, session)
@@ -305,7 +311,7 @@ const aspspRoutes: FastifyPluginAsync = async (app) => {
   app.post('/v1/aspsp/payments/consents/:consentId/authorise/reject', async (request, reply) => {
     const { consentId } = consentParams.parse(request.params)
     const input = rejectFormSchema.parse(request.body)
-    const { view, redirectUri } = await loadForPage(consentId)
+    const { view, redirectUri } = await loadForPage(consentId, request)
 
     const session = verifyConsentSession(app, input.token)
     const granter = await loadGranter(app, session)

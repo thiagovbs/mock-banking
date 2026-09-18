@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Prisma } from '@prisma/client'
 import { buildTestApp } from '../helpers/build-app.js'
 import { MockPrismaClient } from '../helpers/mock-prisma.js'
@@ -440,6 +440,68 @@ describe('Pagamento com redirecionamento (ASPSP)', () => {
       expect(response.body).toContain('25.00')
       expect(response.body).toContain('Loja Exemplo')
       expect(response.body).toContain('loja@example.com')
+    })
+  })
+
+  /**
+   * Atras de um gateway, o Host da requisicao e o do backend. Sem PUBLIC_BASE_URL
+   * a Iniciadora recebia um endereco interno, e a tela postava o formulario num
+   * caminho sem o basePath -- 404 na cara do titular, depois da senha digitada.
+   */
+  describe('atras de um gateway', () => {
+    const original = process.env.PUBLIC_BASE_URL
+
+    afterEach(() => {
+      if (original === undefined) delete process.env.PUBLIC_BASE_URL
+      else process.env.PUBLIC_BASE_URL = original
+    })
+
+    it('monta a authorisationUrl com o endereco publico', async () => {
+      process.env.PUBLIC_BASE_URL = 'https://api-assets.sensedia.com/v1'
+      mock.paymentConsent.create.mockResolvedValue(consentRow())
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/aspsp/payments/consents',
+        headers: { 'x-initiator-key': INITIATOR_KEY },
+        payload: {
+          amount: '25.00',
+          creditorName: 'Loja Exemplo',
+          creditorKey: { type: 'EMAIL', value: 'loja@example.com' },
+        },
+      })
+
+      expect(response.json().authorisationUrl).toBe(
+        `https://api-assets.sensedia.com/v1/v1/aspsp/payments/consents/${CONSENT_ID}/authorise`,
+      )
+    })
+
+    it('aponta o formulario da tela para o endereco publico', async () => {
+      process.env.PUBLIC_BASE_URL = 'https://api-assets.sensedia.com/v1'
+      mock.paymentConsent.findUnique.mockResolvedValue(consentRow())
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/aspsp/payments/consents/${CONSENT_ID}/authorise`,
+      })
+
+      expect(response.body).toContain(
+        `action="https://api-assets.sensedia.com/v1/v1/aspsp/payments/consents/${CONSENT_ID}/authorise/login"`,
+      )
+    })
+
+    it('sem a variavel, segue usando o host da requisicao', async () => {
+      delete process.env.PUBLIC_BASE_URL
+      mock.paymentConsent.findUnique.mockResolvedValue(consentRow())
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/aspsp/payments/consents/${CONSENT_ID}/authorise`,
+      })
+
+      expect(response.body).toContain(
+        `action="http://localhost:80/v1/aspsp/payments/consents/${CONSENT_ID}/authorise/login"`,
+      )
     })
   })
 })

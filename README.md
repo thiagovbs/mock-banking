@@ -56,6 +56,7 @@ Variáveis principais:
 | `JWT_SECRET` | Segredo para assinatura dos JWTs |
 | `INITIATOR_SERVICE_SECRET` | Segredo compartilhado com a Iniciadora (header `x-initiator-key`) usado nas rotas ITP/PISP JSR e na assinatura dos webhooks |
 | `WEBHOOK_ALLOWED_ORIGINS` | Origens para as quais o core pode avisar mudanca de status do consentimento, separadas por virgula. Vazio = nenhum webhook sai |
+| `PUBLIC_BASE_URL` | Endereço público desta API **com** o basePath do gateway (ex.: `https://api-assets.sensedia.com/v1`). Vazio = usa o host da requisição |
 | `PORT` | Porta HTTP (padrão `3000`) |
 | `HOST` | Host de bind (padrão `0.0.0.0`) |
 
@@ -722,6 +723,27 @@ retentativa conclui em vez de debitar de novo.
 O desfazer grava evento mas **não dispara webhook**. Avisar `AUTHORISED` faria a
 Iniciadora submeter de novo, falhar de novo e gerar outro aviso — um laço. Ela
 fica sabendo pelo erro da própria chamada.
+
+### Atrás de um gateway: `PUBLIC_BASE_URL`
+
+Duas coisas nesta API devolvem URL absoluta: o `authorisationUrl` do
+consentimento e as `action` dos formulários das telas de aprovação. Montadas a
+partir de `request.host`, as duas quebram atrás de um gateway — o gateway
+reescreve o `Host` para o backend ao repassar.
+
+O sintoma é desagradável: a Iniciadora recebe uma URL apontando para o endereço
+**interno**, e a tela, quando servida pelo gateway, posta o formulário num
+caminho sem o basePath — o titular vê a tela, digita a senha, clica em confirmar
+e recebe `404`.
+
+`PUBLIC_BASE_URL` é o endereço público **com** o basePath. Os caminhos da
+aplicação são concatenados a ele, então uma rota `/v1/aspsp/...` publicada sob
+`https://api-assets.sensedia.com/v1` vira
+`https://api-assets.sensedia.com/v1/v1/aspsp/...` — que é como o gateway de fato
+a expõe. Sem a variável, cai no host da requisição, que é o correto em acesso
+direto e em desenvolvimento.
+
+Vale para as duas jornadas com tela: pagamento e compartilhamento de dados.
 
 ### A trilha do consentimento, e por que ela é separada do status
 

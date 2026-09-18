@@ -145,6 +145,12 @@ ${body}
 
 export type PaymentConsentPageView = {
   id: string
+  /**
+   * Endereco publico desta API, com o basePath do gateway. Prefixa as `action`
+   * dos formularios: sem ele, a tela servida atras de um gateway posta num
+   * caminho que perde o basePath e responde 404.
+   */
+  baseUrl: string
   amount: string
   creditorName: string
   creditorDocument: string | null
@@ -192,7 +198,7 @@ ${errorBlock}
     <div class="section-title">O que está sendo pedido</div>
 ${paymentBlock(consent)}
     <div class="section-title">Identifique-se</div>
-    <form method="POST" action="/v1/aspsp/payments/consents/${escapeHtml(
+    <form method="POST" action="${escapeHtml(consent.baseUrl)}/v1/aspsp/payments/consents/${escapeHtml(
       consent.id,
     )}/authorise/login">
       <label for="username">Usuário</label>
@@ -244,14 +250,14 @@ ${errorBlock}
     <div class="section-title">O que está sendo pedido</div>
 ${paymentBlock(consent)}
     <div class="section-title">Suas contas</div>
-    <form method="POST" action="/v1/aspsp/payments/consents/${escapeHtml(
+    <form method="POST" action="${escapeHtml(consent.baseUrl)}/v1/aspsp/payments/consents/${escapeHtml(
       consent.id,
     )}/authorise/confirm">
       <input type="hidden" name="token" value="${escapeHtml(token)}" />
 ${accountsBlock}
       <button type="submit">Autorizar pagamento</button>
     </form>
-    <form method="POST" action="/v1/aspsp/payments/consents/${escapeHtml(
+    <form method="POST" action="${escapeHtml(consent.baseUrl)}/v1/aspsp/payments/consents/${escapeHtml(
       consent.id,
     )}/authorise/reject">
       <input type="hidden" name="token" value="${escapeHtml(token)}" />

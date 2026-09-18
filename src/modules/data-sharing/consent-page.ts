@@ -149,6 +149,12 @@ ${body}
 
 export type ConsentPageConsent = {
   id: string
+  /**
+   * Endereco publico desta API, com o basePath do gateway. Prefixa as `action`
+   * dos formularios: sem ele, a tela servida atras de um gateway posta num
+   * caminho que perde o basePath e responde 404.
+   */
+  baseUrl: string
   granteeName: string
   permissions: string[]
   expiresAt: Date | null
@@ -192,7 +198,7 @@ ${errorBlock}
 ${permissionsBlock(consent.permissions)}
 ${validityBlock(consent.expiresAt)}
     <div class="section-title">Identifique-se</div>
-    <form method="POST" action="/v1/data-sharing/consents/${escapeHtml(consent.id)}/authorise/login">
+    <form method="POST" action="${escapeHtml(consent.baseUrl)}/v1/data-sharing/consents/${escapeHtml(consent.id)}/authorise/login">
       <label for="username">Usuário</label>
       <input type="text" id="username" name="username" autocomplete="username" required />
       <label for="password">Senha</label>
@@ -241,14 +247,14 @@ ${errorBlock}
 ${permissionsBlock(consent.permissions)}
 ${validityBlock(consent.expiresAt)}
     <div class="section-title">Suas contas</div>
-    <form method="POST" action="/v1/data-sharing/consents/${escapeHtml(
+    <form method="POST" action="${escapeHtml(consent.baseUrl)}/v1/data-sharing/consents/${escapeHtml(
       consent.id,
     )}/authorise/confirm">
       <input type="hidden" name="token" value="${escapeHtml(token)}" />
 ${accountsBlock}
       <button type="submit">Autorizar compartilhamento</button>
     </form>
-    <form method="POST" action="/v1/data-sharing/consents/${escapeHtml(consent.id)}/authorise/reject">
+    <form method="POST" action="${escapeHtml(consent.baseUrl)}/v1/data-sharing/consents/${escapeHtml(consent.id)}/authorise/reject">
       <input type="hidden" name="token" value="${escapeHtml(token)}" />
       <button class="secondary" type="submit">Recusar</button>
     </form>`,
