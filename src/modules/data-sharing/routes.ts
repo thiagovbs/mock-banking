@@ -343,7 +343,7 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     const back = consentCallbackUrl(page.redirectUri, page.id, 'AUTHORISED')
     if (back) return reply.redirect(back)
 
-    return reply.type('text/html').send(resultStepHtml(page.granteeName, true))
+    return reply.type('text/html').send(resultStepHtml(page.granteeName, true, page.baseUrl))
   })
 
   app.post('/v1/data-sharing/consents/:consentId/authorise/reject', async (request, reply) => {
@@ -363,7 +363,7 @@ const dataSharingRoutes: FastifyPluginAsync = async (app) => {
     const back = consentCallbackUrl(page.redirectUri, page.id, 'REJECTED')
     if (back) return reply.redirect(back)
 
-    return reply.type('text/html').send(resultStepHtml(page.granteeName, false))
+    return reply.type('text/html').send(resultStepHtml(page.granteeName, false, page.baseUrl))
   })
 
   // ---------------------------------------------------------------------

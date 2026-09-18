@@ -3,6 +3,8 @@ import bcrypt from 'bcrypt'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { AppError } from '../../shared/errors.js'
+import { publicBaseUrl } from '../../shared/public-url.js'
+import { ASSET_PATHS } from '../assets/routes.js'
 
 const authorizeSchema = z.object({
   redirect_uri: z.string().url(),
@@ -18,7 +20,16 @@ const tokenSchema = z.object({
   code: z.string().min(1),
 })
 
-function loginPageHtml(requestId: string, error?: string): string {
+/**
+ * Estilo e logo vem de arquivo, e nao inline: atras do gateway a CSP traz
+ * `style-src 'self'` e `img-src 'self'`, que recusam <style> inline e data:
+ * URI. A tela aparecia crua e sem logo.
+ */
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+}
+
+function loginPageHtml(baseUrl: string, requestId: string, error?: string): string {
   const errorBlock = error
     ? `<div class="error">${error}</div>`
     : ''
@@ -29,116 +40,11 @@ function loginPageHtml(requestId: string, error?: string): string {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Login — Sensedia</title>
-  <style>
-    :root {
-      --bg:#FBFAFC; --surface:#FFFFFF; --surface-2:#F4F2F8; --ink:#1A1526;
-      --muted:#6B6280; --faint:#8E85A3; --line:#E7E2F0;
-      --purple:#8241B0; --purple-soft:#F0E7F8; --orange:#EA5B0C; --orange-soft:#FCEBDF;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--ink);
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-    }
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: 0 10px 30px rgba(26,21,38,0.08);
-      width: 100%;
-      max-width: 400px;
-      padding: 40px 32px;
-    }
-    .logo {
-      display: block;
-      margin: 0 auto 28px;
-      height: 40px;
-      width: auto;
-    }
-    .eyebrow {
-      font-family: ui-monospace, "SF Mono", "Menlo", "Courier New", monospace;
-      text-transform: uppercase;
-      letter-spacing: .12em;
-      font-size: 11px;
-      color: var(--orange);
-      text-align: center;
-      margin-bottom: 8px;
-    }
-    h1 {
-      font-size: 22px;
-      font-weight: 600;
-      text-align: center;
-      margin-bottom: 8px;
-    }
-    .subtitle {
-      color: var(--muted);
-      font-size: 14px;
-      text-align: center;
-      margin-bottom: 28px;
-    }
-    label {
-      display: block;
-      font-size: 13px;
-      color: var(--muted);
-      margin-bottom: 6px;
-    }
-    input {
-      width: 100%;
-      padding: 12px 14px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      font-size: 15px;
-      color: var(--ink);
-      background: var(--surface);
-      margin-bottom: 18px;
-      transition: border-color .15s, box-shadow .15s;
-    }
-    input:focus {
-      outline: none;
-      border-color: var(--purple);
-      box-shadow: 0 0 0 3px var(--purple-soft);
-    }
-    button {
-      width: 100%;
-      padding: 13px;
-      background: var(--orange);
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background .15s;
-    }
-    button:hover { background: #C2480A; }
-    .error {
-      background: var(--orange-soft);
-      color: #C2480A;
-      border-radius: 10px;
-      padding: 10px 14px;
-      font-size: 13px;
-      margin-bottom: 18px;
-    }
-    .footer {
-      margin-top: 24px;
-      text-align: center;
-      font-family: ui-monospace, "SF Mono", "Menlo", "Courier New", monospace;
-      font-size: 11px;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      color: var(--faint);
-    }
-  </style>
+  <link rel="stylesheet" href="${escapeAttr(baseUrl)}${ASSET_PATHS.css}" />
 </head>
 <body>
-  <div class="card">
-    <img class="logo" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4MTIiIGhlaWdodD0iMjI2IiB2aWV3Qm94PSIwIDAgODEyIDIyNiI+PHJlY3Qgd2lkdGg9IjgxMiIgaGVpZ2h0PSIyMjYiIGZpbGw9IiNmZmZmZmYiLz48dGV4dCB4PSI0MDYiIHk9IjEzMCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjYwIiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSIjODI0MUIwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5TZW5zZWRpYTwvdGV4dD48L3N2Zz4=" alt="Sensedia" />
+  <div class="card login">
+    <img class="logo" src="${escapeAttr(baseUrl)}${ASSET_PATHS.logo}" alt="Sensedia" />
     <div class="eyebrow">Acesso seguro</div>
     <h1>Entrar na sua conta</h1>
     <p class="subtitle">Autentique-se para continuar</p>
@@ -179,7 +85,7 @@ const oauthRoutes: FastifyPluginAsync = async (app) => {
       throw new AppError(404, 'Login request not found', 'AUTH_REQUEST_NOT_FOUND')
     }
 
-    return reply.type('text/html').send(loginPageHtml(request_id))
+    return reply.type('text/html').send(loginPageHtml(publicBaseUrl(request), request_id))
   })
 
   app.post('/v1/auth/login/confirm', async (request, reply) => {
@@ -199,7 +105,9 @@ const oauthRoutes: FastifyPluginAsync = async (app) => {
     })
 
     if (!user?.customer || !(await bcrypt.compare(input.password, user.passwordHash))) {
-      return reply.type('text/html').send(loginPageHtml(input.request_id, 'Usuário ou senha inválidos.'))
+      return reply
+        .type('text/html')
+        .send(loginPageHtml(publicBaseUrl(request), input.request_id, 'Usuário ou senha inválidos.'))
     }
 
     const code = randomUUID()

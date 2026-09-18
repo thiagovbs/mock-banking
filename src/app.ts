@@ -15,6 +15,7 @@ import aspspRoutes from './modules/aspsp/routes.js'
 import jsrRoutes from './modules/jsr/routes.js'
 import qrCodeRoutes from './modules/qrcode/routes.js'
 import dataSharingRoutes from './modules/data-sharing/routes.js'
+import assetRoutes from './modules/assets/routes.js'
 
 export async function buildApp() {
   const app = Fastify({ logger: true })
@@ -119,6 +120,7 @@ export async function buildApp() {
   await app.register(jsrRoutes)
   await app.register(qrCodeRoutes)
   await app.register(dataSharingRoutes)
+  await app.register(assetRoutes)
 
 
   return app
