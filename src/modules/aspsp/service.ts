@@ -1,7 +1,8 @@
 import { Prisma, PrismaClient } from '@prisma/client'
 import { AppError } from '../../shared/errors.js'
 import { moneyToString } from '../../shared/money.js'
-import { normalizePixKey, validatePixKey, type PixKeyType } from '../pix/service.js'
+import { type PixKeyType } from '../pix/service.js'
+import { createPaymentConsentRecord, normalizeDocument } from './../payments/create-consent.js'
 import { settlePaymentConsent, type SettleConsentResult } from '../payments/consent.js'
 import { recordConsentEvent } from '../payments/events.js'
 
@@ -38,14 +39,12 @@ export type PaymentConsentView = {
   rejectedAt: Date | null
 }
 
+export { normalizeDocument }
+
 export type Granter = {
   userId: string
   customerId: string
   document: string
-}
-
-export function normalizeDocument(document: string): string {
-  return document.replace(/\D/g, '')
 }
 
 export function toConsentView(consent: any): PaymentConsentView {
@@ -103,38 +102,17 @@ export async function createPaymentConsent(
 ): Promise<PaymentConsentView> {
   const { prisma, input } = params
 
-  const creditorKeyValue = normalizePixKey(input.creditorKey.type, input.creditorKey.value)
-  validatePixKey(input.creditorKey.type, creditorKeyValue)
-
-  if (input.amount.lessThanOrEqualTo(0)) {
-    throw new AppError(400, 'Amount must be greater than zero', 'INVALID_AMOUNT')
-  }
-
-  const consent = await prisma.paymentConsent.create({
-    data: {
-      amount: input.amount,
-      description: input.description,
-      creditorName: input.creditorName,
-      creditorDocument: input.creditorDocument,
-      creditorKeyType: input.creditorKey.type,
-      creditorKeyValue,
-      debtorDocument: input.debtorDocument
-        ? normalizeDocument(input.debtorDocument)
-        : undefined,
-      redirectUri: input.redirectUri,
-      webhookUri: input.webhookUri,
-      externalConsentId: input.externalConsentId,
-      authorisationFlow: 'REDIRECT_FLOW',
-      status: 'AWAITING_AUTHORISATION',
-    },
-  })
-
-  await recordConsentEvent(prisma, {
-    consentId: consent.id,
-    event: 'CONSENT_CREATED',
-    actor: 'INITIATOR',
-    statusAfter: 'AWAITING_AUTHORISATION',
-    detail: { amount: moneyToString(consent.amount), creditorName: consent.creditorName },
+  const consent = await createPaymentConsentRecord(prisma, {
+    flow: 'REDIRECT_FLOW',
+    amount: input.amount,
+    description: input.description,
+    creditorName: input.creditorName,
+    creditorDocument: input.creditorDocument,
+    creditorKey: input.creditorKey,
+    debtorDocument: input.debtorDocument,
+    redirectUri: input.redirectUri,
+    webhookUri: input.webhookUri,
+    externalConsentId: input.externalConsentId,
   })
 
   return toConsentView(consent)

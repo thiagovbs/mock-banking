@@ -4,6 +4,7 @@ import { AppError } from '../../shared/errors.js'
 import { moneyToString } from '../../shared/money.js'
 import { settlePaymentConsent } from '../payments/consent.js'
 import { recordConsentEvent } from '../payments/events.js'
+import { createPaymentConsentRecord } from '../payments/create-consent.js'
 import { verifyFidoAssertion } from './assertion.js'
 
 /**
@@ -271,35 +272,22 @@ export async function createJsConsent(
 
   const fidoChallenge = base64url(randomBytes(32))
 
-  const consent = await prisma.paymentConsent.create({
-    data: {
+  // O consentimento nasce CREATED, esperando a assertion do dispositivo. Quem
+  // decide isso e a jornada, dentro de createPaymentConsentRecord.
+  const consent = await createPaymentConsentRecord(prisma, {
+    flow: 'FIDO_FLOW',
+    amount: input.amount,
+    description: input.description,
+    creditorName: input.creditorName,
+    creditorDocument: input.creditorDocument,
+    creditorKey: input.creditorKey,
+    holder: {
       userId: account.customer.userId,
       customerId: account.customer.id,
       accountId: account.id,
-      enrollmentId: enrollment.id,
-      amount: input.amount,
-      description: input.description,
-      creditorName: input.creditorName,
-      creditorDocument: input.creditorDocument,
-      creditorKeyType: input.creditorKey.type,
-      creditorKeyValue: input.creditorKey.value,
-      status: 'CREATED',
-      authorisationFlow: 'FIDO_FLOW',
-      fidoChallenge,
     },
-  })
-
-  await recordConsentEvent(prisma, {
-    consentId: consent.id,
-    event: 'CONSENT_CREATED',
-    actor: 'INITIATOR',
-    statusAfter: 'CREATED',
-    detail: {
-      amount: moneyToString(consent.amount),
-      creditorName: consent.creditorName,
-      enrollmentId: enrollment.id,
-      flow: 'FIDO_FLOW',
-    },
+    enrollmentId: enrollment.id,
+    fidoChallenge,
   })
 
   return { consentId: consent.id, fidoChallenge, accountId: account.id }
